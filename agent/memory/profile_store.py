@@ -58,10 +58,7 @@ class ProfileStore:
 
         if database_path is None:
             database_path = (
-                Path(__file__).resolve().parents[2]
-                / "data"
-                / "memory"
-                / "profiles.sqlite3"
+                Path(__file__).resolve().parents[2] / "data" / "memory" / "profiles.sqlite3"
             )
 
         self.database_path = Path(database_path)  # 画像 SQLite 文件路径

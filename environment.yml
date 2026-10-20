@@ -1,4 +1,4 @@
-name: YourLoverDesk
+name: Mypy
 channels:
   - defaults
 dependencies:
@@ -64,6 +64,7 @@ dependencies:
       - langchain-chroma==1.1.0
       - langchain-core==1.5.1
       - langchain-ollama==1.1.0
+      - langchain-openai==1.4.1
       - langchain-protocol==0.0.18
       - langchain-text-splitters==1.1.2
       - langgraph==1.2.9
@@ -79,6 +80,7 @@ dependencies:
       - numpy==2.5.1
       - oauthlib==3.3.1
       - ollama==0.6.2
+      - openai==2.54.0
       - onnxruntime==1.28.0
       - opentelemetry-api==1.44.0
       - opentelemetry-exporter-otlp-proto-common==1.44.0
@@ -128,4 +130,3 @@ dependencies:
       - xxhash==3.8.1
       - yarl==1.24.5
       - zstandard==0.25.0
-prefix: D:\anaconda3\envs\YourLoverDesk

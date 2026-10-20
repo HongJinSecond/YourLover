@@ -1,4 +1,1 @@
-"""
-Avatar模块
-包含Live2D控制器、渲染器、动作、表情、口型同步等组件
-"""
+"""Live2D rendering and character interactions."""

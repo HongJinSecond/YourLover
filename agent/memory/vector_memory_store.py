@@ -5,7 +5,7 @@
 注入 Prompt 时展示，让 LLM 知道"这条回忆是哪一天说的"。
 
 实现参考 agent/tools/RAGTool.py：使用 langchain_chroma 的 Chroma +
-OllamaEmbeddings（embedding 模型见 settings.EMBEDDING_MODEL_NAME）。
+OllamaEmbeddings（embedding 模型见 config.json 的 EMBEDDING_MODEL_NAME）。
 
 任何初始化/写入/检索失败都会抛出 VectorStoreError，由上层
 LongTermMemory 降级到 JSON + 关键词检索，不中断聊天。
@@ -42,19 +42,19 @@ class VectorMemoryStore:
 
         参数：
             collection_name: Chroma 集合名，默认 long_term_memory（与 RAG_DB 隔离）
-            persist_directory: Chroma 持久化目录，默认 settings.CHROMA_PATH
-            embedding_model: embedding 模型名，默认 settings.EMBEDDING_MODEL_NAME
+            persist_directory: Chroma 持久化目录，默认 config.CHROMA_PATH
+            embedding_model: embedding 模型名，默认 config.EMBEDDING_MODEL_NAME
         """
         try:
             from langchain_chroma import Chroma
 
             from agent.models.OllamaModels import OllamaEmbeddings
-            from core.config import settings
+            from utils.config_manager import config
         except ImportError as exc:
             raise VectorStoreError(f"Chroma 依赖未安装: {exc}") from exc
 
-        persist_directory = persist_directory or settings.CHROMA_PATH
-        embedding_model = embedding_model or settings.EMBEDDING_MODEL_NAME
+        persist_directory = persist_directory or config.CHROMA_PATH
+        embedding_model = embedding_model or config.EMBEDDING_MODEL_NAME
         try:
             self.collection = Chroma(
                 collection_name=collection_name,

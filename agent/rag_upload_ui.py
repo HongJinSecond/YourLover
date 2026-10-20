@@ -4,10 +4,11 @@ version: 1.0.0
 Author: HongJin
 email: 756547077@qq.com
 """
+
 import streamlit as st
 
-from core.config import settings
 from agent.tools.RAGTool import RAG
+from utils.config_manager import config as settings
 
 
 @st.cache_resource

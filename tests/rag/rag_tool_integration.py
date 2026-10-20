@@ -6,15 +6,15 @@ version: 1.0.0
 Author: HongJin
 email: 756547077@qq.com
 """
+
 import sys
 from pathlib import Path
 
-# 把 app 目录加入 sys.path，保证可从任意位置运行（python test/RAGTest.py 或 python RAGTest.py）
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "app"))
+# 把项目根目录加入 sys.path，支持直接运行此集成脚本。
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from config import settings
-from tools.RAGTool import RAGTool
-
+from agent.tools.RAGTool import RAGTool
+from utils.config_manager import config as settings
 
 # ---------- 测试数据：先上传到知识库 ----------
 TEST_DOCUMENTS = [
@@ -142,7 +142,7 @@ def main():
     print("🧪 RAGTool tool_call 功能测试")
     print(f"向量化模型: {settings.EMBEDDING_MODEL_NAME}")
     print(f"向量库路径: {settings.CHROMA_PATH}")
-    print(f"BM25 文档数: (初始化后可知)")
+    print("BM25 文档数: (初始化后可知)")
     print()
 
     rag_tool = RAGTool()

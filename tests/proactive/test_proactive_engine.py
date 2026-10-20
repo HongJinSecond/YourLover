@@ -10,8 +10,8 @@ import time
 
 from agent.affinity.affinity_store import AffinityStore
 from agent.affinity.service import AffinityService
-from agent.proactive.engine import ProactiveStage, ProactiveEngine
-from core.config import Settings
+from agent.proactive.engine import ProactiveEngine, ProactiveStage
+from utils.config_manager import config
 
 
 class _FakeSettings:
@@ -70,7 +70,7 @@ def test_first_check_in_fires_after_idle_threshold(tmp_path):
     assert len(events["check_in"]) == 1
     assert engine.stage is ProactiveStage.NUDGING
     assert engine.nudges_sent == 1
-    assert "第 1 次主动找他" in events["check_in"][0] or "第一次主动找他" in events["check_in"][0]
+    assert "第一次主动找用户" in events["check_in"][0]
 
 
 def test_repeated_ignoring_leads_to_angry_and_silent(tmp_path):
@@ -146,16 +146,16 @@ def test_instructions_mention_idle_duration():
     assert "{{0}}" in events["check_in"][0]
 
 
-def test_settings_defaults_used_when_attrs_missing():
-    """配置对象缺键时回落到 core.config.Settings 默认值。"""
+def test_current_json_settings_used_when_attrs_missing():
+    """部分配置对象缺键时使用统一 JSON 配置中的值。"""
 
     class Empty:
         pass
 
     engine = ProactiveEngine(Empty(), initial_last_activity=0.0)
-    assert engine._min_idle == Settings.PROACTIVE_MIN_IDLE_SECONDS
-    assert engine._max_idle == Settings.PROACTIVE_MAX_IDLE_SECONDS
-    assert engine._cooldown == Settings.PROACTIVE_COOLDOWN_SECONDS
+    assert engine._min_idle == config.PROACTIVE_MIN_IDLE_SECONDS
+    assert engine._max_idle == config.PROACTIVE_MAX_IDLE_SECONDS
+    assert engine._cooldown == config.PROACTIVE_COOLDOWN_SECONDS
 
 
 def test_cooldown_blocks_frequent_check_ins():

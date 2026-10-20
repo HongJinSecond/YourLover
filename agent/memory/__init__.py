@@ -28,8 +28,8 @@ from agent.memory.llm_extractor import (
 from agent.memory.long_term_memory import LongTermMemory
 from agent.memory.profile_service import (
     OllamaProfileCandidateExtractor,
-    ProfileCandidateExtractor,
     ProfileCandidateExtractionError,
+    ProfileCandidateExtractor,
     ProfileProcessingResult,
     UserProfileManager,
 )

@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-
 # 输出分段分隔符（提示词与解析共用同一常量）
 SUMMARY_MARKER = "<<<SESSION_SUMMARY>>>"
 MEMORIES_MARKER = "<<<LONG_TERM_MEMORIES>>>"
@@ -129,7 +128,8 @@ class LLMMemoryExtractor:
                 ]
             )
         except Exception as exc:
-            raise MemoryExtractionError(f"LLM 合并提取调用失败: {exc}") from exc
+            # 上层会记录此异常；服务商错误正文可能回显密钥，不拼接正文。
+            raise MemoryExtractionError(f"LLM 合并提取调用失败: {type(exc).__name__}") from exc
 
         text = str(getattr(response, "content", "") or "").strip()
         if not text:
@@ -145,13 +145,13 @@ class LLMMemoryExtractor:
         "一次性输出两部分：\n"
         "1. 会话摘要：保留主要话题、关键约定、情绪状态、未完成事项，丢弃寒暄与重复；\n"
         "2. 长期记忆条目：判断哪些信息值得跨会话长期记住，不能什么都存。\n"
-        "值得存的情况包括：用户明确说\"记住/记得/请记得\"、明确偏好、重要事实、"
+        '值得存的情况包括：用户明确说"记住/记得/请记得"、明确偏好、重要事实、'
         "身份信息、情绪波动较大或有影响的经历、明确的未来计划或约定、"
-        "有教育意义的\"问题-解决\"过程。\n"
+        '有教育意义的"问题-解决"过程。\n'
         "每条长期记忆必须是：提炼后的理解（不是原文照抄），标注类型：\n"
         "    [semantic]   语义记忆：偏好、事实、身份、当前状态\n"
         "    [episodic]   情节记忆：一次有起承转合的经历/情绪事件\n"
-        "    [procedural] 程序性候选：用户给出的未来交互规则（如\"以后/每次...要\"）\n"
+        '    [procedural] 程序性候选：用户给出的未来交互规则（如"以后/每次...要"）\n'
         "没有值得长期记住的内容时，第二部分输出空。\n"
         "严格遵守输出格式，不要输出解释或 Markdown：\n"
         + SUMMARY_MARKER
@@ -177,8 +177,7 @@ class LLMMemoryExtractor:
         return (
             f"当前时间：{now.strftime('%Y-%m-%d %H:%M')}\n\n"
             f"【历史摘要】\n{previous_summary or '（无）'}\n\n"
-            f"【本轮被裁剪的对话】\n"
-            + "\n".join(lines)
+            f"【本轮被裁剪的对话】\n" + "\n".join(lines)
         )
 
     # ------------------------------------------------------------------

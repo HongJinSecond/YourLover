@@ -20,7 +20,6 @@ from typing import Any, Iterable
 from agent.memory.profile_candidate import ProfileCandidate
 from agent.memory.schema import EpisodicMemory, MemoryEvidence, ProceduralCandidate, SemanticMemory
 
-
 # 用户当前状态类记忆的默认过期天数
 STATE_TTL_DAYS = 30
 
@@ -133,9 +132,7 @@ class MemoryClassifier:
             )
         return decisions
 
-    def extract_semantic_memories(
-        self, messages: list[Any], user_id: str
-    ) -> list[SemanticMemory]:
+    def extract_semantic_memories(self, messages: list[Any], user_id: str) -> list[SemanticMemory]:
         """从用户消息中提取语义记忆。
 
         对每条用户消息按 scope（preference/state/profile_candidate/fact）拆分，
@@ -192,7 +189,7 @@ class MemoryClassifier:
         problem, actions, result, views = parts
         ids = [item.message_id for item in views if item.message_id]
         session_id = next((item.session_id for item in views if item.session_id), None)
-        # 简单基于关键词的情感前后估计（MVP 存根，可被真实分析器替换）
+        # 规则降级路径仅根据明确关键词记录情感线索。
         before = {"anxiety": 0.8} if _contains_any(problem, ("焦虑", "压力", "紧张")) else {}
         after = {"calm": 0.7} if _contains_any(result, ("好多", "缓解", "平静", "放心")) else {}
         triggers = _recall_triggers(problem)
@@ -305,15 +302,14 @@ class MemoryClassifier:
         """
         views = _view_messages(messages)
         problems = [
-            item for item in views
+            item
+            for item in views
             if item.role == "user" and _contains_any(item.content, _PROBLEM_WORDS)
         ]
-        actions = [
-            item for item in views
-            if item.role == "assistant" and item.content.strip()
-        ]
+        actions = [item for item in views if item.role == "assistant" and item.content.strip()]
         results = [
-            item for item in views
+            item
+            for item in views
             if item.role == "user" and _contains_any(item.content, _RESULT_WORDS)
         ]
         if not problems or not actions or not results:
@@ -334,9 +330,7 @@ class MemoryClassifier:
 # 问题词：用户表达困扰/负面情绪的关键词
 _PROBLEM_WORDS = ("焦虑", "压力", "紧张", "难过", "失眠", "困扰", "问题", "怎么办")
 # 结果词：用户表达问题被缓解/解决的关键词
-_RESULT_WORDS = (
-    "好多了", "好一些", "缓解", "平静", "有帮助", "有用", "解决了", "明白了", "谢谢"
-)
+_RESULT_WORDS = ("好多了", "好一些", "缓解", "平静", "有帮助", "有用", "解决了", "明白了", "谢谢")
 
 
 def _view_messages(messages: Iterable[Any]) -> list[_MessageView]:
@@ -367,9 +361,7 @@ def _message_view(message: Any, index: int) -> _MessageView:
         content = getattr(message, "content", "")
         message_id = getattr(message, "id", None) or getattr(message, "message_id", None)
         metadata = (
-            getattr(message, "metadata", None)
-            or getattr(message, "additional_kwargs", None)
-            or {}
+            getattr(message, "metadata", None) or getattr(message, "additional_kwargs", None) or {}
         )
         session_id = getattr(message, "session_id", None) or metadata.get("session_id")
     if isinstance(content, list):
@@ -521,7 +513,9 @@ def _recall_triggers(problem: str) -> list[str]:
     优先返回命中的关键词（期末/考试/复习/焦虑/压力/失眠），
     都未命中时返回截断后的问题文本作为触发词。
     """
-    triggers = [word for word in ("期末", "考试", "复习", "焦虑", "压力", "失眠") if word in problem]
+    triggers = [
+        word for word in ("期末", "考试", "复习", "焦虑", "压力", "失眠") if word in problem
+    ]
     return triggers or [_trim(problem, 20)]
 
 

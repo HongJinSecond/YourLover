@@ -4,5 +4,6 @@ __pycache__/
 .pytest_cache/
 requirements.txt
 .trae/
-
+.ruff_cache/
+icon/*
 data/*

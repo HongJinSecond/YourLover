@@ -140,9 +140,7 @@ class ShortTermMemory:
 
         供需要 sequence_no / event_id 的调用方使用（如摘要进度同步）。
         """
-        return self.session_store.load_memory_item_records(
-            user_id, session_id, limit=limit
-        )
+        return self.session_store.load_memory_item_records(user_id, session_id, limit=limit)
 
     def save_turn(
         self,

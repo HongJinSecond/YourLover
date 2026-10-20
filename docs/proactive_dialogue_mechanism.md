@@ -180,8 +180,8 @@ ChatAgent.invoke
   ├─ _user_input            : proactive_context 非空 → 返回 {"user_input": ""}
   │                           不创建 HumanMessage / MemoryItem
   ├─ _retrieve_long_term_memory : 用会话最后一条用户消息作检索词（便于接着旧话题说）
-  ├─ _assemble_system_prompt    : system prompt 末尾追加
-  │                              【主动消息指令（系统内部指令，仅本轮生效，绝不向用户提及）】块
+  ├─ _assemble_system_prompt    : 运行时资料区追加
+  │                              【主动消息指令（系统内部指令，仅本轮生效，绝不向用户提及）】块，随后固定追加全局规则
   ├─ _chat                     : 主动轮调用 LLM 前补一条占位 HumanMessage
   │                             （"他没有回复，你主动发起了对话"），保证输入以用户
   │                             消息结尾；**占位也写回 messages 历史**，避免后续
@@ -226,7 +226,7 @@ ChatAgent.invoke
 
 ## 5. ⚙️ 配置项
 
-定义于 `core/config.py` 的 `Settings`，并同步到 `config.json`（**双份必须同步**）：
+统一定义于项目根目录 `config.json`，通过 `utils.config_manager.config` 读取，无需同步另一份 Python 配置：
 
 | 配置项 | 默认值 | 说明 |
 | :--- | :--- | :--- |
@@ -239,8 +239,8 @@ ChatAgent.invoke
 | `PROACTIVE_ANGRY_PENALTY_MAX` | `15` | 生气时扣除好感度的最大值。 |
 | `PROACTIVE_COOLDOWN_SECONDS` | `1800`（30 分钟） | 主动消息冷却时间：发完一条主动消息后该时长内不再触发下一条（用户回复即清零）。 |
 
-引擎读取使用 `getattr(settings, key, Settings 默认值)`：`ConfigManager`（属性访问）缺键时
-自动回落到 `core.config.Settings`，配置不完整也不会崩溃。
+引擎优先使用传入的配置对象；测试等场景传入部分配置时，缺项从当前全局 `config.json`
+配置中读取。JSON 文件本身应包含上述字段；缺失时明确报错，不使用另一套隐含默认值。
 
 ---
 

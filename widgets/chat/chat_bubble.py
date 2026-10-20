@@ -1,229 +1,148 @@
-"""
-聊天气泡组件
-显示单条聊天消息，支持用户消息与助手消息的不同对齐与样式。
-"""
+"""Selectable, plain-text conversation messages."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtCore import QRect, QSize, Qt
+from PySide6.QtGui import QFontMetrics
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
+from core.event_bus import event_bus
+from utils.config_manager import config
 from widgets.base.base_widget import BaseWidget
+from widgets.theme import ACCENT, ACCENT_SOFT, BORDER, MUTED, SURFACE, TEXT, ui_font
 
 
 class MessageRole(Enum):
-    """消息角色枚举。"""
-
-    USER = auto()   # 用户发送的消息
-    AGENT = auto()  # 助手（Agent）回复的消息
-    SYSTEM = auto() # 系统提示消息
+    USER = auto()
+    AGENT = auto()
+    SYSTEM = auto()
 
 
 @dataclass
 class MessageData:
-    """单条消息的数据封装。
-
-    Attributes:
-        role: 消息角色。
-        content: 消息文本内容。
-        timestamp: 发送时间。
-        extra: 扩展字段（如附件、工具调用状态等）。
-    """
-
     role: MessageRole
     content: str
-    timestamp: datetime = None
-    extra: dict = None
-
-    def __post_init__(self) -> None:
-        if self.timestamp is None:
-            self.timestamp = datetime.now()
-        if self.extra is None:
-            self.extra = {}
+    timestamp: datetime = field(default_factory=datetime.now)
 
 
 class ChatBubble(BaseWidget):
-    """单条聊天气泡。
-
-    职责：
-    - 根据角色显示左/右对齐的气泡。
-    - 提供文本内容展示（后续可接入 Markdown 渲染）。
-    - 暴露 refresh(data) 接口，便于外部更新。
-
-    暴露接口：
-    - refresh(message_data): 根据 MessageData 刷新显示。
-    - set_content(text): 更新文本（流式输出时可用）。
-    """
-
     def __init__(self, parent: QWidget | None = None) -> None:
-        """初始化气泡。
-
-        Args:
-            parent: 父级 QWidget。
-        """
         self._message: MessageData | None = None
         super().__init__(parent)
 
     def setup_ui(self) -> None:
-        """创建气泡布局与控件。"""
         self._main_layout = QHBoxLayout(self)
-        self._main_layout.setContentsMargins(10, 6, 10, 6)
-        self._main_layout.setSpacing(8)
-
-        # 消息内容标签
-        self._content_label = QLabel(self)
-        self._content_label.setObjectName("bubble_content")
-        self._content_label.setWordWrap(True)
-        self._content_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._content_label.setFont(QFont("Microsoft YaHei", 10))
-
-        # 时间戳标签
-        self._time_label = QLabel(self)
-        self._time_label.setObjectName("bubble_time")
-        self._time_label.setFont(QFont("Microsoft YaHei", 8))
-
-        # 垂直容器：内容 + 时间
-        self._bubble_layout = QVBoxLayout()
-        self._bubble_layout.setSpacing(2)
-        self._bubble_layout.addWidget(self._content_label)
-        self._bubble_layout.addWidget(self._time_label)
-
-        # 占位 stretch（根据角色动态调整位置：左 / 右）
-        self._left_stretch = QWidget()
-        self._left_stretch.setSizePolicy(
-            self._left_stretch.sizePolicy().horizontalPolicy(),
-            self._left_stretch.sizePolicy().verticalPolicy(),
-        )
-        self._left_stretch.setMinimumWidth(0)
-
-        self._right_stretch = QWidget()
-        self._right_stretch.setSizePolicy(
-            self._right_stretch.sizePolicy().horizontalPolicy(),
-            self._right_stretch.sizePolicy().verticalPolicy(),
-        )
-        self._right_stretch.setMinimumWidth(0)
-
-        # 气泡容器：固定宽度范围
+        self._main_layout.setContentsMargins(0, 5, 0, 5)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._bubble_container = QWidget(self)
-        self._bubble_container.setObjectName("bubble_container")
-        self._bubble_container.setMaximumWidth(460)
-        bubble_main = QHBoxLayout(self._bubble_container)
-        bubble_main.setContentsMargins(0, 0, 0, 0)
-        bubble_main.addLayout(self._bubble_layout)
-
-        # 默认顺序：左 stretch + 气泡 + 右 stretch（apply_style 会调整）
-        self._main_layout.addWidget(self._left_stretch, stretch=1)
+        self._bubble_container.setObjectName("message_card")
+        self._bubble_container.setMaximumWidth(520)
+        self._bubble_container.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
+        layout = QVBoxLayout(self._bubble_container)
+        layout.setContentsMargins(16, 12, 16, 11)
+        layout.setSpacing(7)
+        self._content_label = QLabel(self)
+        self._content_label.setWordWrap(True)
+        self._content_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._content_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._content_label.setFont(ui_font())
+        self._content_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        self._time_label = QLabel(self)
+        self._time_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._time_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._time_label.setFont(ui_font(8))
+        layout.addWidget(self._content_label)
+        layout.addWidget(self._time_label)
         self._main_layout.addWidget(self._bubble_container)
-        self._main_layout.addWidget(self._right_stretch, stretch=1)
-
-        self.setMaximumWidth(720)
-        self.apply_style()
 
     def connect_signals(self) -> None:
-        """气泡内部无特殊信号需要连接。"""
-        pass
+        event_bus.settings_batch_changed.connect(self._on_settings_changed)
+
+    def _on_settings_changed(self, values: dict) -> None:
+        if "CHAT_DISPLAY_NAME" in values and self._message is not None:
+            self._update_sender()
+            self._update_size()
+
+    def _update_sender(self) -> None:
+        sender = (
+            "你"
+            if self._message.role == MessageRole.USER
+            else getattr(config, "CHAT_DISPLAY_NAME", "YourLover") or "YourLover"
+        )
+        self._sender_text = f"{sender}  ·  {self._message.timestamp:%H:%M}"
+        self._time_label.setText(self._sender_text)
+        self._time_label.setToolTip(self._sender_text)
 
     def apply_style(self) -> None:
-        """根据当前消息角色应用样式（卡通游戏风）。"""
         if self._message is None:
             return
+        user = self._message.role == MessageRole.USER
+        system = self._message.role == MessageRole.SYSTEM
+        alignment = Qt.AlignmentFlag.AlignRight if user else Qt.AlignmentFlag.AlignLeft
+        if system:
+            alignment = Qt.AlignmentFlag.AlignHCenter
+        self._main_layout.setAlignment(self._bubble_container, alignment)
+        background = ACCENT if user else (ACCENT_SOFT if system else SURFACE)
+        foreground = "#FFFFFF" if user else TEXT
+        border = ACCENT if user else BORDER
+        self._bubble_container.setStyleSheet(f"""
+            QWidget#message_card {{ background: {background}; border: 1px solid {border}; border-radius: 14px; }}
+            QLabel {{ background: transparent; border: none; color: {foreground}; }}
+        """)
+        self._time_label.setStyleSheet(
+            f"color: {'#DDD5F5' if user else MUTED}; background: transparent;"
+        )
 
-        # 重置 stretch 的可见性，确保切换角色时正确显示位置
-        self._left_stretch.setVisible(True)
-        self._right_stretch.setVisible(True)
-
-        if self._message.role == MessageRole.USER:
-            # 用户消息：粉色渐变气泡，右对齐
-            self._content_label.setStyleSheet(
-                """
-                QLabel#bubble_content {
-                    background-color: #ec4899;
-                    color: #ffffff;
-                    border-radius: 18px;
-                    border-bottom-right-radius: 6px;
-                    padding: 12px 16px;
-                    font-weight: 500;
-                }
-                """
-            )
-            self._time_label.setStyleSheet("color: #94a3b8; background: transparent; border: none;")
-            self._time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-
-            # 用户消息：左 stretch 占据剩余空间，右 stretch 隐藏（气泡靠右）
-            self._left_stretch.setVisible(True)
-            self._right_stretch.setVisible(False)
-
-        elif self._message.role == MessageRole.AGENT:
-            # Agent 消息：白色卡片 + 粉色边框，左对齐
-            self._content_label.setStyleSheet(
-                """
-                QLabel#bubble_content {
-                    background-color: #ffffff;
-                    color: #1e293b;
-                    border-radius: 18px;
-                    border-bottom-left-radius: 6px;
-                    border: 1.5px solid #fce7f3;
-                    padding: 12px 16px;
-                }
-                """
-            )
-            self._time_label.setStyleSheet("color: #94a3b8; background: transparent; border: none;")
-            self._time_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-
-            # Agent 消息：左 stretch 隐藏（气泡靠左），右 stretch 占据剩余空间
-            self._left_stretch.setVisible(False)
-            self._right_stretch.setVisible(True)
-
-        else:
-            # 系统消息：淡黄色提示，居中
-            self._content_label.setStyleSheet(
-                """
-                QLabel#bubble_content {
-                    background-color: #fef3c7;
-                    color: #92400e;
-                    border-radius: 14px;
-                    padding: 8px 14px;
-                }
-                """
-            )
-            self._time_label.setStyleSheet("color: #94a3b8; background: transparent; border: none;")
-            self._time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._left_stretch.setVisible(False)
-            self._right_stretch.setVisible(False)
-
-    def refresh(self, data: MessageData | None = None) -> None:
-        """根据消息数据刷新气泡。
-
-        Args:
-            data: MessageData 实例。
-        """
-        if data is not None:
-            self._message = data
-        if self._message is None:
-            return
-
-        self._content_label.setText(self._message.content)
-        self._time_label.setText(self._message.timestamp.strftime("%H:%M"))
+    def refresh(self, data: MessageData) -> None:
+        self._message = data
+        self._content_label.setText(data.content)
+        self._update_sender()
         self.apply_style()
+        self._update_size()
 
     def set_content(self, text: str) -> None:
-        """更新气泡文本（流式输出时追加使用）。
-
-        Args:
-            text: 新的完整文本内容。
-        """
         if self._message is not None:
             self._message.content = text
         self._content_label.setText(text)
+        self._update_size()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_size()
+
+    def minimumSizeHint(self) -> QSize:
+        # The current card width must not become the minimum width of its parent.
+        return QSize(120, self.height())
+
+    def _update_size(self) -> None:
+        if self._message is None:
+            return
+        metrics = QFontMetrics(self._content_label.font())
+        available = max(120, min(520, self.width() - 36))
+        natural = max(
+            (metrics.horizontalAdvance(line) for line in self._message.content.splitlines()),
+            default=0,
+        )
+        sender_metrics = QFontMetrics(self._time_label.font())
+        sender_width = sender_metrics.horizontalAdvance(self._sender_text)
+        width = min(available, max(110, natural + 34, sender_width + 34))
+        text_width = width - 34
+        self._time_label.setText(
+            sender_metrics.elidedText(self._sender_text, Qt.TextElideMode.ElideRight, text_width)
+        )
+        rect = metrics.boundingRect(
+            QRect(0, 0, text_width, 100000), int(Qt.TextFlag.TextWordWrap), self._message.content
+        )
+        height = max(metrics.height(), rect.height()) + 4
+        self._content_label.setFixedSize(text_width, height)
+        self._bubble_container.setFixedSize(
+            width, height + self._time_label.sizeHint().height() + 30
+        )
+        self.setFixedHeight(self._bubble_container.height() + 10)
 
     def message(self) -> MessageData | None:
-        """返回当前气泡绑定的消息数据。"""
         return self._message

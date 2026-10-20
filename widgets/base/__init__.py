@@ -4,6 +4,5 @@ widgets/base 包
 """
 
 from widgets.base.base_widget import BaseWidget
-from widgets.base.extensible_item import ExtensibleItem, ItemPayload
 
-__all__ = ["BaseWidget", "ExtensibleItem", "ItemPayload"]
+__all__ = ["BaseWidget"]

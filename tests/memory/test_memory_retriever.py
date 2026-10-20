@@ -122,10 +122,7 @@ def test_format_memory_context_groups_memories_without_internal_evidence(tmp_pat
     # 每条记忆带 [YYYY-MM-DD] 日期前缀（取 created_at 前 10 位）
     assert f"- [{semantic.created_at[:10]}] 用户喜欢简短回答。" in context
     assert "Episodic memories:" in context
-    assert (
-        f"- [{episodic.created_at[:10]}] 复习计划: 用户焦虑后接受了复习拆分计划。"
-        in context
-    )
+    assert f"- [{episodic.created_at[:10]}] 复习计划: 用户焦虑后接受了复习拆分计划。" in context
     assert "msg_001" not in context
     assert "不要直接暴露" not in context
     assert "77" not in context

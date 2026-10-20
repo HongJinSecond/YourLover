@@ -25,8 +25,7 @@ from agent.memory import LongTermMemory, ShortTermMemory, UserProfileManager
 from agent.memory.profile_store import ProfileStore
 from agent.memory.schema import SemanticMemory
 from agent.memory.store import FileMemoryStore
-from core.config import Settings
-
+from utils.config_manager import config
 
 DEFAULT_MODEL = "qwen3:8b"
 DEFAULT_USER_ID = "memory-mvp-demo-user"
@@ -74,8 +73,12 @@ def run_memory_mvp_demo(
     """
 
     memory_dir = Path(memory_dir)
-    session_database = Path(session_database) if session_database else memory_dir.parent / "sessions.sqlite3"
-    profile_database = Path(profile_database) if profile_database else memory_dir.parent / "profiles.sqlite3"
+    session_database = (
+        Path(session_database) if session_database else memory_dir.parent / "sessions.sqlite3"
+    )
+    profile_database = (
+        Path(profile_database) if profile_database else memory_dir.parent / "profiles.sqlite3"
+    )
 
     first_store = FileMemoryStore(memory_dir)
     first_agent = _build_agent(
@@ -170,7 +173,7 @@ def _build_agent(
     )
     return ChatAgent(
         llm,
-        Settings(),
+        config,
         {"configurable": {"thread_id": thread_id}},
         short_term_memory=short_term,
         long_term_memory=long_term,

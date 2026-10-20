@@ -17,7 +17,6 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-
 # 记忆文件 schema 版本号，用于未来数据迁移
 SCHEMA_VERSION = "0.1"
 

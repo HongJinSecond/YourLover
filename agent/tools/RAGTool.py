@@ -1,28 +1,31 @@
 from datetime import datetime
+
 """
 Descripttion: RAG查询工具，用于检索和查询信息
 version: 1.0.0
 Author: HongJin
 email: 756547077@qq.com
 """
-import os
 import hashlib
-
-from agent.tools.BaseTool import BaseTool, discover_and_wrap_tools
-from core.config import settings, Settings
-from agent.models.OllamaModels import OllamaEmbeddings
+import os
 
 import jieba
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from rank_bm25 import BM25Okapi
 
-from langchain_core.documents import Document
-from langchain_chroma import Chroma
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from agent.models.OllamaModels import OllamaEmbeddings
+from agent.tools.BaseTool import BaseTool
+from utils.config_manager import ConfigManager
+from utils.config_manager import config as app_config
+
 
 class RAGTool(BaseTool):
     """
     RAG查询工具，用于检索和查询信息, 包含额外的数据库内容，用于补充模型中不存在的信息或过时的信息，以解决模型幻觉问题。
     """
+
     name = "rag"
     description = """
     RAG查询工具，用于检索和查询信息, 包含额外的数据库内容，用于补充模型中不存在的信息或过时的信息，以解决模型幻觉问题。
@@ -45,94 +48,80 @@ class RAGTool(BaseTool):
     param_descriptions = {
         "query": "查询关键词，必填，用于检索信息",
     }
-    examples = [
-        {
-            "user_input": "帮我查询一下 校园情感陪伴助手 有什么功能",
-            "model_params": {"query": "校园情感陪伴助手 功能"},
-            "return_value": "校园情感陪伴助手 主要功能包括：...",
-        },
-    ]
 
     def __init__(self):
-        self.RAG = RAG(settings)
-
+        self.RAG = RAG(app_config)
 
     def _tool_call(self, query: str) -> str:
         """调用RAG工具，返回查询结果"""
-        return self.RAG.query(query, n_results=settings.RAG_N_RESULTS)
-    
+        return self.RAG.query(query, n_results=self.RAG.config.RAG_N_RESULTS)
 
 
 class RAG:
     """
     RAG实体类。
     """
-    def __init__(self, config: Settings):
+
+    def __init__(self, config: ConfigManager):
         self.config = config
         self.chroma_db = Chroma(
             collection_name="RAG_DB",
-            embedding_function=OllamaEmbeddings(model = self.config.EMBEDDING_MODEL_NAME),
+            embedding_function=OllamaEmbeddings(model=self.config.EMBEDDING_MODEL_NAME),
             persist_directory=self.config.CHROMA_PATH,
         )
 
-        self.spliter= RecursiveCharacterTextSplitter(
-            chunk_size=config.CHUNK_SIZE, #分割后的文本段最大长度
-            chunk_overlap=config.CHUNK_OVERLAP, #连续文本段之间的字符串重叠数量
-            separators=config.SEPARATORS, #自然段落划分的符号 分隔符
+        self.spliter = RecursiveCharacterTextSplitter(
+            chunk_size=config.CHUNK_SIZE,  # 分割后的文本段最大长度
+            chunk_overlap=config.CHUNK_OVERLAP,  # 连续文本段之间的字符串重叠数量
+            separators=config.SEPARATORS,  # 自然段落划分的符号 分隔符
             length_function=len,
-        ) #文本分割器
+        )  # 文本分割器
 
         # 新增：BM25 检索器，启动时从 Chroma 重建索引
         self.bm25_retriever = BM25Retriever()
         self._rebuild_bm25_index()
-
 
     def _rebuild_bm25_index(self):
         """从 ChromaDB 拉取全部文档，构建 BM25 索引"""
         all_data = self.chroma_db.get()  # 返回 {'ids','documents','metadatas'}
         documents = [
             Document(page_content=text, metadata=meta)
-            for text, meta in zip(all_data['documents'], all_data['metadatas'])
+            for text, meta in zip(all_data["documents"], all_data["metadatas"])
         ]
         self.bm25_retriever.build_from_documents(documents)
 
-    def upload_by_str(self,data,filename):
+    def upload_by_str(self, data, filename):
         """将传入的字符串向量化，并存入到数据库中"""
         md5_hex = get_string_md5(data)
 
         if check_md5(md5_hex):
             return "[跳过]内容已经存储在知识库中"
 
-        if len(data)>settings.MAX_SPLIT_CHAR_NUMBER:
+        if len(data) > self.config.MAX_SPLIT_CHAR_NUMBER:
             knowledge_chunks = self.spliter.split_text(data)
         else:
             knowledge_chunks = [data]
 
         metadata = {
-            "source":filename,
-            "create_time":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "operator":self.config.RAG_FILE_UPLOADER
+            "source": filename,
+            "create_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "operator": self.config.RAG_FILE_UPLOADER,
         }
 
-        #加载到向量数据库中
+        # 加载到向量数据库中
         self.chroma_db.add_texts(
             knowledge_chunks,
             metadatas=[metadata for _ in knowledge_chunks],
         )
 
         # 增量更新 BM25 索引（基于已缓存文档 + 新文档重建，无需从 Chroma 全量拉取）
-        new_docs = [
-            Document(page_content=chunk, metadata=metadata)
-            for chunk in knowledge_chunks
-        ]
+        new_docs = [Document(page_content=chunk, metadata=metadata) for chunk in knowledge_chunks]
         self.bm25_retriever.add_documents(new_docs)
 
-        #记录数据到md5记录中
+        # 记录数据到md5记录中
         save_md5(md5_hex)
 
         return "[成功]内容已经上传到了数据库"
-    
-
 
     def query(self, query: str, n_results: int = 10) -> str:
         """查询数据库，返回查询结果（向量 + BM25 多路召回，RRF 融合）
@@ -145,10 +134,16 @@ class RAG:
         # 多路召回时各路多取一些候选，便于融合后仍有足够 top-k
         k_candidates = n_results * 2
 
-        # 1. 向量检索（密集检索，擅长语义相似）
-        vec_results = self.chroma_db.similarity_search_with_relevance_scores(
-            query=query,
-            k=k_candidates,
+        # OpenAI 兼容模式只需聊天接口：查询已有知识库时直接使用 BM25，
+        # 不额外要求用户配置 embedding API 或启动 Ollama。
+        remote = getattr(self.config, "LLM_PROVIDER", "ollama") == "openai"
+        vec_results = (
+            []
+            if remote
+            else self.chroma_db.similarity_search_with_relevance_scores(
+                query=query,
+                k=k_candidates,
+            )
         )
 
         # 2. BM25 检索（稀疏检索，擅长关键词精确匹配）
@@ -175,9 +170,9 @@ class RAG:
             )
             formatted_chunks.append(chunk_text)
 
-        header = f"[检索成功] 向量+BM25多路召回，共返回 {len(formatted_chunks)} 条结果:\n{'='*50}\n"
+        method = "BM25 关键词召回" if remote else "向量+BM25多路召回"
+        header = f"[检索成功] {method}，共返回 {len(formatted_chunks)} 条结果:\n{'=' * 50}\n"
         return header + "\n\n".join(formatted_chunks)
-
 
     @staticmethod
     def _rrf_fuse(vec_results, bm25_results, k=60):
@@ -208,25 +203,25 @@ class RAG:
             rrf_scores[key][1] += 1.0 / (k + rank)
 
         # 按融合分数降序
-        return [(doc, score) for doc, score in sorted(
-            rrf_scores.values(), key=lambda x: x[1], reverse=True
-        )]
-
+        return [
+            (doc, score)
+            for doc, score in sorted(rrf_scores.values(), key=lambda x: x[1], reverse=True)
+        ]
 
 
 class BM25Retriever:
     """基于 rank_bm25 的中文 BM25 检索器"""
-    
+
     def __init__(self):
         self.bm25: BM25Okapi = None
         self.documents: list[Document] = []  # 与 bm25 索引一一对应
-    
+
     @staticmethod
     def tokenize(text: str) -> list[str]:
         """中文分词：jieba 切词后过滤空白和标点"""
         tokens = jieba.lcut(text)
         return [t.strip() for t in tokens if t.strip()]
-    
+
     def build_from_documents(self, documents: list[Document]) -> None:
         """从 LangChain Document 列表构建 BM25 索引"""
         self.documents = documents
@@ -249,48 +244,47 @@ class BM25Retriever:
         """查询返回 (Document, bm25_score) 列表，按分数降序"""
         if self.bm25 is None or not self.documents:
             return []
-        
+
         query_tokens = self.tokenize(query)
         scores = self.bm25.get_scores(query_tokens)
-        
+
         # 取 top-k（scores 是与 documents 一一对应的数组）
         top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
         return [(self.documents[i], float(scores[i])) for i in top_indices]
 
 
-
-
-def check_md5(md5_str:str):
+def check_md5(md5_str: str):
     """检查传入的md5字符串是否已经被处理过了"""
-    if not os.path.exists(settings.MD5_PATH):
-        #表示md5不存在---还没处理过
-        #创造新的文件
-        open(settings.MD5_PATH,'w',encoding='utf-8').close()
+    if not os.path.exists(app_config.MD5_PATH):
+        # 表示md5不存在---还没处理过
+        # 创造新的文件
+        open(app_config.MD5_PATH, "w", encoding="utf-8").close()
         return False
 
     else:
-        for line in open(settings.MD5_PATH,'r',encoding='utf-8').readlines():
-            line=line.strip() #删除回车和空格
-            if line == md5_str: #查找到了对应的内容
+        for line in open(app_config.MD5_PATH, "r", encoding="utf-8").readlines():
+            line = line.strip()  # 删除回车和空格
+            if line == md5_str:  # 查找到了对应的内容
                 return True
 
         return False
 
-def save_md5(md5_str:str):
+
+def save_md5(md5_str: str):
     """将传入的md5字符串保存到文件内"""
-    with open(settings.MD5_PATH,'a',encoding='utf-8') as f:
-        f.write(md5_str + '\n')
+    with open(app_config.MD5_PATH, "a", encoding="utf-8") as f:
+        f.write(md5_str + "\n")
 
 
-def get_string_md5(input_str:str, encoding='utf-8'):
+def get_string_md5(input_str: str, encoding="utf-8"):
     """将传入的字符串变成md5格式"""
 
     # 将字符串转换为bytes字节数组
     str_bytes = input_str.encode(encoding=encoding)
 
     # 创建md5对象
-    md5_obj = hashlib.md5() #md5对象
-    md5_obj.update(str_bytes) #更新内容
-    md5_hex = md5_obj.hexdigest() #转换为16进制
+    md5_obj = hashlib.md5()  # md5对象
+    md5_obj.update(str_bytes)  # 更新内容
+    md5_hex = md5_obj.hexdigest()  # 转换为16进制
 
     return md5_hex

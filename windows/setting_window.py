@@ -1,396 +1,337 @@
-from widgets.settings.setting_item import TipSettingItem
-"""
-设置窗口模块
-负责：
-- 模型设置（Live2D模型选择）
-- 换装设置（模型外观、服装）
-- API设置（Agent API配置）
-- Prompt设置（系统提示词）
-- Agent设置（Agent参数）
-- 声音设置（TTS、音量）
-- 快捷键设置
-"""
+"""Chat appearance and model settings; validate, persist, then notify the application."""
 
 from typing import Any
 
-from PySide6.QtCore import Qt, QPropertyAnimation, QRect, QEasingCurve, Signal
-from PySide6.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
-from core.event_bus import event_bus
-from windows.base_window import BaseWindow
-from widgets.settings.setting_item import (
-    OptionSettingItem,
-    SettingItem,
-    SliderSettingItem,
-    TextSettingItem,
-    ToggleSettingItem,
+from agent.models.OpenAIModels import (
+    DEFAULT_OPENAI_BASE_URL,
+    normalize_base_url,
+    validate_openai_settings,
 )
-from widgets.settings.setting_panel import SettingPanel
+from core.event_bus import event_bus
 from utils.config_manager import config
+from widgets.avatar import import_avatar
+from widgets.icons import icon
+from widgets.settings.avatar_setting_item import AvatarSettingItem
+from widgets.settings.persona_prompt_setting_item import PersonaPromptSettingItem
+from widgets.settings.setting_item import OptionSettingItem, SettingItem, TextSettingItem
+from widgets.settings.setting_panel import SettingPanel
+from widgets.theme import (
+    ACCENT,
+    ACCENT_SOFT,
+    BORDER,
+    BUTTON_STYLE,
+    MUTED,
+    SURFACE,
+    TEXT,
+    add_shadow,
+    keep_on_screen,
+    screen_bounds,
+    ui_font,
+)
+from windows.base_window import BaseWindow
+
 
 class SettingWindow(BaseWindow):
-    """设置面板窗口。
-
-    职责：
-    - 以滑出面板形式展示所有设置项。
-    - 支持动态添加/移除设置项，便于业务扩展。
-    - 收集设置值并通过 EventBus 广播变化。
-    - 提供保存与取消入口。
-
-    暴露接口：
-    - add_setting_item(item): 添加设置项。
-    - remove_setting_item(key): 移除设置项。
-    - get_setting_value(key): 获取单个值。
-    - get_all_values(): 获取所有值。
-    - slide_in(): 滑入显示。
-    - slide_out(): 滑出隐藏。
-    - save_settings(): 保存设置（触发 EventBus）。
-
-    信号：
-    - saved(): 点击保存时发射。
-    """
-
     saved = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        """初始化设置窗口。
-
-        Args:
-            parent: 父级窗口，通常为空或 ChatWindow。
-        """
-        self._animation: QPropertyAnimation | None = None
-        self._expanded_width: int = 360
+        self._saved_values: dict[str, Any] = {}
+        self._drag_position: QPoint | None = None
         super().__init__(parent)
 
     def _setup_window_flags(self) -> None:
-        """配置设置窗口：无边框、可作为侧边栏弹出。"""
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setWindowTitle("YourLover - 设置")
-        self.resize(self._expanded_width, 600)
+        self.setWindowTitle("YourLover · 设置")
+        self.resize(520, 690)
 
     def setup_ui(self) -> None:
-        """创建设置窗口布局。"""
-        self._central_widget = QWidget(self)
-        self._central_widget.setObjectName("setting_window_central")
-        self.setCentralWidget(self._central_widget)
-
-        self._layout = QVBoxLayout(self._central_widget)
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(0)
-
-        # 顶部标题栏
-        self._header_layout = QHBoxLayout()
-        self._header_layout.setContentsMargins(16, 12, 16, 12)
-        self._header_layout.setSpacing(8)
-
-        self._title_label = QLabel("设置")
-        self._title_label.setObjectName("setting_title")
-
-        # 将固定尺寸改为稍大的值，确保文字有足够空间
-        self._close_button = QPushButton("✕")  # 建议使用图标字符代替"关闭"二字
+        shell = QWidget(self)
+        outer = QVBoxLayout(shell)
+        outer.setContentsMargins(12, 12, 12, 16)
+        self._central_widget = QWidget(shell)
+        self._central_widget.setObjectName("settings_card")
+        add_shadow(self._central_widget)
+        layout = QVBoxLayout(self._central_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        header = QWidget(self)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(28, 26, 22, 22)
+        header_layout.setSpacing(14)
+        mark = QLabel(self)
+        mark.setObjectName("settings_mark")
+        mark.setPixmap(icon("settings", ACCENT, 22).pixmap(22, 22))
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mark.setFixedSize(44, 44)
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(5)
+        self._title_label = QLabel("设置", self)
+        self._title_label.setFont(ui_font(16, True))
+        subtitle = QLabel("定制形象、人物与模型服务", self)
+        subtitle.setFont(ui_font(9))
+        subtitle.setStyleSheet(f"color: {MUTED};")
+        title_layout.addWidget(self._title_label)
+        title_layout.addWidget(subtitle)
+        self._close_button = QPushButton(self)
+        self._close_button.setProperty("iconOnly", True)
+        self._close_button.setIcon(icon("close"))
         self._close_button.setFixedSize(32, 32)
         self._close_button.setToolTip("关闭设置")
-        self._close_button.setObjectName("close_button")  # ← 关键：添加 objectName
-
-        self._header_layout.addWidget(self._title_label)
-        self._header_layout.addStretch()
-        self._header_layout.addWidget(self._close_button)
-
-        # 设置列表面板
+        self._close_button.setAccessibleName("关闭设置")
+        header_layout.addWidget(mark)
+        header_layout.addLayout(title_layout)
+        header_layout.addStretch()
+        header_layout.addWidget(self._close_button, 0, Qt.AlignmentFlag.AlignTop)
         self._setting_panel = SettingPanel(self)
-
-        # 底部操作栏
-        self._footer_layout = QHBoxLayout()
-        self._footer_layout.setContentsMargins(16, 12, 16, 12)
-        self._footer_layout.setSpacing(10)
-
-        self._save_button = QPushButton("保存")
-        self._cancel_button = QPushButton("取消")
-
-        self._footer_layout.addStretch()
-        self._footer_layout.addWidget(self._cancel_button)
-        self._footer_layout.addWidget(self._save_button)
-
-        # 组装
-        header_widget = QWidget()
-        header_widget.setLayout(self._header_layout)
-        footer_widget = QWidget()
-        footer_widget.setLayout(self._footer_layout)
-
-        self._layout.addWidget(header_widget)
-        self._layout.addWidget(self._setting_panel, stretch=1)
-        self._layout.addWidget(footer_widget)
-
-        self.apply_style()
+        self._provider_note = QLabel(self)
+        self._provider_note.setFont(ui_font(9))
+        self._provider_note.setWordWrap(True)
+        self._provider_note.setObjectName("provider_note")
+        note_layout = QVBoxLayout()
+        note_layout.setContentsMargins(28, 6, 28, 18)
+        note_layout.addWidget(self._provider_note)
+        footer = QWidget(self)
+        footer.setObjectName("settings_footer")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(28, 18, 28, 20)
+        self._save_button = QPushButton("保存设置", self)
+        self._save_button.setProperty("primary", True)
+        self._save_button.setMinimumHeight(40)
+        self._cancel_button = QPushButton("取消", self)
+        self._cancel_button.setMinimumHeight(40)
+        footer_layout.addStretch()
+        footer_layout.addWidget(self._cancel_button)
+        footer_layout.addSpacing(6)
+        footer_layout.addWidget(self._save_button)
+        for button in (self._save_button, self._cancel_button, self._close_button):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout.addWidget(header)
+        layout.addWidget(self._setting_panel, 1)
+        layout.addLayout(note_layout)
+        layout.addWidget(footer)
+        outer.addWidget(self._central_widget)
+        self.setCentralWidget(shell)
+        self.setFont(ui_font())
 
     def connect_signals(self) -> None:
-        """连接按钮信号与 EventBus。"""
         self._close_button.clicked.connect(self.hide_window)
         self._cancel_button.clicked.connect(self.hide_window)
         self._save_button.clicked.connect(self.save_settings)
-
-        # 设置项变化 -> EventBus（SettingPanel 已处理，此处监听本地信号方便调试）
-        self._setting_panel.item_value_changed.connect(
-            lambda key, value: print(f"[SettingWindow] {key} = {value}")
-        )
+        self._setting_panel.item_value_changed.connect(self._on_setting_changed)
 
     def apply_style(self) -> None:
-        """应用设置窗口样式（卡通游戏风）。"""
         self.setStyleSheet(
-            """
-            #setting_window_central {
-                background-color: #fdf2f8;
-                border-left: 1.5px solid #fce7f3;
-            }
-            #setting_title {
-                font-family: "Microsoft YaHei";
-                font-size: 16px;
-                font-weight: bold;
-                color: #be185d;
-            }
-            QPushButton {
-                padding: 8px 18px;
-                border-radius: 14px;
-                border: 1.5px solid #fce7f3;
-                background-color: #ffffff;
-                color: #be185d;
-                font-family: "Microsoft YaHei";
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #fce7f3;
-                border-color: #f9a8d4;
-            }
-            QPushButton#save_button {
-                background-color: #ec4899;
-                color: white;
-                border: none;
-                font-weight: bold;
-            }
-            QPushButton#save_button:hover {
-                background-color: #db2777;
-            }
-            QPushButton#save_button:pressed {
-                background-color: #be185d;
-            }
-            QPushButton#close_button {
-                padding: 0px;
-                border: none;
-                background-color: transparent;
-                color: #be185d;
-                font-size: 16px;
-                font-weight: bold;
-            }
-            QPushButton#close_button:hover {
-                background-color: #fce7f3;
-                border-radius: 16px;
-            }
-
-            """
+            BUTTON_STYLE
+            + f"""
+            QWidget#settings_card {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 20px; color: {TEXT}; }}
+            QLabel#settings_mark {{ background: {ACCENT_SOFT}; border-radius: 13px; }}
+            QLabel#provider_note {{ background: #F5F3FB; color: #777087; border-radius: 10px; padding: 12px; }}
+            QWidget#settings_footer {{ border-top: 1px solid {BORDER}; background: transparent; }}
+        """
         )
-        self._save_button.setObjectName("save_button")
 
-    # ============================================================
-    # 设置项管理接口
-    # ============================================================
+    def _on_setting_changed(self, key: str, value: Any) -> None:
+        if key == "LLM_PROVIDER":
+            self._sync_model_fields()
+        elif key == "PERSONA_PROMPT_MODE":
+            self._sync_prompt_fields()
+
+    def _sync_prompt_fields(self) -> None:
+        self._persona_item.set_use_default(self.get_setting_value("PERSONA_PROMPT_MODE") == "default")
+
+    def _use_custom_persona(self) -> None:
+        self.set_values({"PERSONA_PROMPT_MODE": "custom"})
+
+    def _sync_model_fields(self) -> None:
+        remote = self.get_setting_value("LLM_PROVIDER") == "openai"
+        for key in ("OPENAI_BASE_URL", "OPENAI_MODEL_ID", "OPENAI_API_KEY"):
+            self._setting_panel.set_item_enabled(key, remote)
+            self._setting_panel.set_item_visible(key, remote)
+        for key in ("api_base", "CHAT_MODEL_NAME"):
+            self._setting_panel.set_item_enabled(key, not remote)
+            self._setting_panel.set_item_visible(key, not remote)
+        self._provider_note.setText(
+            "保存后在下一次聊天中验证连接。所选模型需支持工具调用。"
+            if remote
+            else "请先启动 Ollama，并确保所填模型已下载。保存时将检查本地连接。"
+        )
 
     def add_setting_item(self, item: SettingItem) -> None:
-        """添加一个设置项。
-
-        Args:
-            item: SettingItem 子类实例。
-        """
         self._setting_panel.add_item(item)
 
-    def remove_setting_item(self, key: str) -> None:
-        """按 key 移除设置项。
-
-        Args:
-            key: 设置项键名。
-        """
-        self._setting_panel.remove_item(key)
-
     def get_setting_value(self, key: str) -> Any:
-        """获取单个设置项的值。
-
-        Args:
-            key: 设置项键名。
-
-        Returns:
-            当前值，不存在返回 None。
-        """
         return self._setting_panel.get_value(key)
 
     def get_all_values(self) -> dict[str, Any]:
-        """获取所有设置项的当前值。"""
         return self._setting_panel.get_values()
 
     def set_values(self, values: dict[str, Any]) -> None:
-        """批量设置多个值。
-
-        Args:
-            values: key -> value 字典。
-        """
         self._setting_panel.set_values(values)
 
     def save_settings(self) -> None:
-        """保存设置。
-
-        行为：
-        - 收集当前所有值。
-        - 发射 saved() 信号。
-        - 通过 EventBus 通知其他模块保存。
-        """
         values = self.get_all_values()
+        try:
+            values["CHAT_DISPLAY_NAME"] = str(values["CHAT_DISPLAY_NAME"]).strip() or "YourLover"
+            if values["PERSONA_PROMPT_MODE"] not in {"default", "custom"}:
+                raise ValueError("请选择系统默认或自定义人物提示词。")
+            if (
+                values["PERSONA_PROMPT_MODE"] == "custom"
+                and not str(values["CUSTOM_PERSONA_PROMPT"]).strip()
+            ):
+                raise ValueError("请填写自定义人物描述，或切换为系统默认提示词。")
+            model_changed = any(
+                value != self._saved_values.get(key)
+                for key, value in values.items()
+                if key in {
+                    "LLM_PROVIDER", "api_base", "CHAT_MODEL_NAME",
+                    "OPENAI_MODEL_ID", "OPENAI_BASE_URL", "OPENAI_API_KEY",
+                }
+            )
+            if model_changed and values.get("LLM_PROVIDER") == "openai":
+                model, url, key = validate_openai_settings(
+                    values["OPENAI_MODEL_ID"], values["OPENAI_BASE_URL"], values["OPENAI_API_KEY"]
+                )
+                values.update(OPENAI_MODEL_ID=model, OPENAI_BASE_URL=url, OPENAI_API_KEY=key)
+            elif model_changed:
+                values["api_base"] = normalize_base_url(values["api_base"])
+                values["CHAT_MODEL_NAME"] = str(values["CHAT_MODEL_NAME"]).strip()
+                if not values["CHAT_MODEL_NAME"]:
+                    raise ValueError("请填写 Ollama 模型名称")
+            if values["CHAT_AVATAR"] != self._saved_values.get("CHAT_AVATAR"):
+                values["CHAT_AVATAR"] = import_avatar(values["CHAT_AVATAR"], config.config_dir)
+            config.update(values)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, "设置未保存", str(exc))
+            return
+        changes = {key: value for key, value in values.items() if value != self._saved_values.get(key)}
+        self._saved_values = dict(values)
+        self.set_values(values)
         self.saved.emit()
-        event_bus.settings_save_requested.emit()
-        config.update(values)
-        event_bus.settings_batch_changed.emit(values)
+        event_bus.settings_batch_changed.emit(changes)
         self.hide_window()
 
-    # ============================================================
-    # 滑入/滑出动画
-    # ============================================================
-
     def slide_in(self, anchor: QWidget | None = None) -> None:
-        """从右侧滑入显示。
-
-        Args:
-            anchor: 锚定窗口，用于计算显示位置；为空时居中。
-        """
+        self._saved_values = {
+            key: getattr(config, key, value) for key, value in self._saved_values.items()
+        }
+        self.set_values(self._saved_values)
+        self._sync_model_fields()
+        self._sync_prompt_fields()
+        bounds = screen_bounds(anchor)
+        self.resize(520, min(690, bounds.height() - 24))
+        point = (
+            QPoint(anchor.geometry().right() + 12, anchor.y())
+            if anchor is not None
+            else bounds.center() - self.rect().center()
+        )
+        self.move(keep_on_screen(self, point, anchor))
         self.show_window()
-        self._setup_position(anchor)
 
-        # 简单动画：从右侧外部移动到目标位置
-        target_rect = self.geometry()
-        start_rect = QRect(
-            target_rect.x() + self._expanded_width,
-            target_rect.y(),
-            target_rect.width(),
-            target_rect.height(),
-        )
-        self._animate_geometry(start_rect, target_rect)
-
-    def slide_out(self) -> None:
-        """向右侧滑出隐藏。"""
-        target_rect = self.geometry()
-        end_rect = QRect(
-            target_rect.x() + self._expanded_width,
-            target_rect.y(),
-            target_rect.width(),
-            target_rect.height(),
-        )
-        self._animate_geometry(target_rect, end_rect)
-        if self._animation is not None:
-            self._animation.finished.connect(self.hide_window)
-
-    def _setup_position(self, anchor: QWidget | None = None) -> None:
-        """根据锚定窗口设置自身位置。
-
-        Args:
-            anchor: 锚定窗口。
-        """
-        if anchor is None:
-            screen_geo = self.screen().availableGeometry()
-            x = screen_geo.right() - self._expanded_width - 40
-            y = (screen_geo.height() - self.height()) // 2
-        else:
-            anchor_geo = anchor.geometry()
-            x = anchor_geo.right() + 8
-            y = anchor_geo.y()
-
-        self.move(x, y)
-
-    def _animate_geometry(self, start_rect: QRect, end_rect: QRect) -> None:
-        """执行窗口几何动画。
-
-        Args:
-            start_rect: 起始矩形。
-            end_rect: 结束矩形。
-        """
-        self.setGeometry(start_rect)
-        self._animation = QPropertyAnimation(self, b"geometry")
-        self._animation.setDuration(250)
-        self._animation.setStartValue(start_rect)
-        self._animation.setEndValue(end_rect)
-        self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._animation.start()
-
-    
-    # 窗口可移动
     def mousePressEvent(self, event) -> None:
-        """记录鼠标按下时的全局偏移量。"""
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._dragging = True
-            # 记录鼠标全局位置与窗口左上角的差值
-            self._drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        if event.button() == Qt.MouseButton.LeftButton and event.position().y() < 110:
+            self._drag_position = event.globalPosition().toPoint() - self.pos()
             event.accept()
+        else:
+            super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
-        """根据偏移量实时更新窗口位置。"""
-        if self._dragging and self._drag_position is not None:
-            new_pos = event.globalPosition().toPoint() - self._drag_position
-            self.move(new_pos)
+        if self._drag_position is not None:
+            self.move(event.globalPosition().toPoint() - self._drag_position)
             event.accept()
+        else:
+            super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        """释放鼠标时停止拖拽。"""
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._dragging = False
-            self._drag_position = None
-            event.accept()
+        self._drag_position = None
+        super().mouseReleaseEvent(event)
 
-    # ============================================================
-    # 预置常用设置项（便于快速扩展）
-    # ============================================================
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.hide_window()
+        else:
+            super().keyPressEvent(event)
 
     def add_default_settings(self) -> None:
-        """添加一组默认设置项作为示例。"""
+        self.add_setting_item(
+            TextSettingItem(
+                "CHAT_DISPLAY_NAME",
+                "显示名称",
+                getattr(config, "CHAT_DISPLAY_NAME", "YourLover"),
+                extra={"placeholder": "YourLover", "max_length": 64},
+            )
+        )
+        self.add_setting_item(
+            AvatarSettingItem(getattr(config, "CHAT_AVATAR", ""), config.config_dir)
+        )
         self.add_setting_item(
             OptionSettingItem(
-                key="live2d_model",
-                label="Live2D 模型",
-                default_value="miku",
-                extra={"options": ["miku", "rem", "custom"]},
+                "PERSONA_PROMPT_MODE",
+                "人物提示词",
+                getattr(config, "PERSONA_PROMPT_MODE", "default"),
+                extra={
+                    "options": ["default", "custom"],
+                    "option_labels": {"default": "系统默认（只读）", "custom": "自定义人物"},
+                },
             )
         )
+        self._persona_item = PersonaPromptSettingItem(getattr(config, "CUSTOM_PERSONA_PROMPT", ""))
+        self._persona_item.custom_mode_requested.connect(self._use_custom_persona)
+        self.add_setting_item(self._persona_item)
         self.add_setting_item(
-            SliderSettingItem(
-                key="volume",
-                label="音量",
-                default_value=80,
-                extra={"min": 0, "max": 100, "help_text": "TTS 与音效音量"},
+            OptionSettingItem(
+                "LLM_PROVIDER",
+                "模型服务",
+                getattr(config, "LLM_PROVIDER", "ollama"),
+                extra={
+                    "options": ["ollama", "openai"],
+                    "option_labels": {"ollama": "本地 Ollama", "openai": "OpenAI 兼容接口"},
+                },
             )
         )
-
         self.add_setting_item(
             TextSettingItem(
-                key="api_base",
-                label="API 地址",
-                default_value="http://localhost:11434",
+                "api_base", "Ollama URL", getattr(config, "api_base", "http://localhost:11434")
             )
         )
-
         self.add_setting_item(
             TextSettingItem(
-                key="CHAT_MODEL_NAME",
-                label="聊天模型",
-                default_value=config.CHAT_MODEL_NAME,
+                "CHAT_MODEL_NAME",
+                "Ollama 模型",
+                config.CHAT_MODEL_NAME,
+                extra={"placeholder": "已下载的模型名称"},
             )
         )
-
         self.add_setting_item(
-            TipSettingItem(
-                key="tip",
-                label="提示",
-                default_value="",
+            TextSettingItem(
+                "OPENAI_BASE_URL",
+                "API URL",
+                getattr(config, "OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL),
+                extra={
+                    "placeholder": "https://服务商地址/v1",
+                    "help_text": "填写 Base URL，保留 /v1 等版本路径。",
+                },
             )
         )
-
+        self.add_setting_item(
+            TextSettingItem(
+                "OPENAI_API_KEY",
+                "API Key",
+                getattr(config, "OPENAI_API_KEY", ""),
+                extra={"password": True, "placeholder": "输入服务商提供的密钥"},
+            )
+        )
+        self.add_setting_item(
+            TextSettingItem(
+                "OPENAI_MODEL_ID",
+                "Model ID",
+                getattr(config, "OPENAI_MODEL_ID", ""),
+                extra={"placeholder": "服务商提供的模型 ID"},
+            )
+        )
+        self._saved_values = self.get_all_values()
+        self._sync_model_fields()
+        self._sync_prompt_fields()

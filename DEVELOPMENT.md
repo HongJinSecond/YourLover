@@ -1,44 +1,45 @@
-<!--
- * @Descripttion: 
- * @version: 
- * @Author: 陈左维2021113561
- * @email: 756547077@qq.com
- * @Date: 2026-06-24 16:50:13
- * @LastEditors: 陈左维2021113561
- * @LastEditTime: 2026-06-25 11:07:50
--->
-# 校园情感陪伴助手 - 开发文档
+# 开发入口
 
-## 目录
+项目使用 Python 3.12、PySide6、live2d-py、LangGraph、LangChain、SQLite 和 Chroma。
 
-1. [项目概述](#1-项目概述)
-2. [架构设计](#2-架构设计)
-3. [核心模块设计](#3-核心模块设计)
-4. [API接口设计](#4-api接口设计)
-5. [数据库设计](#5-数据库设计)
-6. [技术选型](#6-技术选型)
-7. [部署与运行](#7-部署与运行)
-8. [安全与性能](#8-安全与性能)
+## 架构
 
----
+```text
+main.py
+  └─ App
+      ├─ WindowManager → 角色窗口 / 主聊天 / 迷你聊天 / 设置
+      ├─ Live2DController → Live2DWidget
+      ├─ AgentWorker → AgentController → ChatAgent (LangGraph)
+      └─ ProactiveEngine → AgentWorker
+```
 
-## 1. 项目概述
+窗口通过 Qt 信号与 `core/event_bus.py` 协调。组件管理展示和输入，App 管理线程与生命周期，AgentController 构造模型并串行执行对话图。
 
-### 1.1 项目定位
+ChatAgent 的工作流为：恢复短期会话 → 加载画像与好感度 → 检索长期记忆 → 注入用户输入 → 模型/工具循环 → 提取画像候选 → 裁剪并提取摘要和长期记忆 → 更新好感度 → 保存短期记忆。
 
-校园情感陪伴助手是一款面向高校学生的AI情感陪伴应用，旨在通过智能对话、个性化记忆和主动关怀，为学生提供温暖、贴心的情感支持。
+实际工具为计算器、文件读写和 RAG。工具继承 `BaseTool`，由 `agent.tools` 自动发现，依据函数签名生成 LangChain 参数 schema。
 
-### 1.2 核心功能
+## 文档
 
-| 功能模块 | 功能描述 |
-|----------|----------|
-| 智能对话与陪伴 | 支持文字/语音多模态输入，基于人设系统进行个性化对话 |
-| 个性化记忆系统 | 记录用户的偏好、经历、重要事件，实现跨会话的长期记忆 |
-| 主动关怀与提醒 | 基于用户画像和校园日历，主动发起关怀对话 |
-| 情感引擎 | 用户情感识别、AI情感状态管理、情感共鸣 |
+| 文档 | 内容 |
+| --- | --- |
+| [项目报告与面试准备](docs/project_report.md) | 整体架构、实现细节、设计取舍、能力边界与面试追问 |
+| [桌面 UI](docs/desktop_ui_development_guide.md) | 窗口、组件、事件流和交互约定 |
+| [配置管理](docs/configuration.md) | config.json、ConfigManager、密钥存储 |
+| [人物提示词](docs/persona_prompts.md) | 默认人设、自定义草稿、固定全局规则与下一轮生效 |
+| [模型接口](docs/openai_compatible_api.md) | Ollama / OpenAI 兼容接口与设置热加载 |
+| [记忆系统](docs/chatbot_memory_module_development.md) | 短期会话、长期记忆、画像与存储 |
+| [主动对话](docs/proactive_dialogue_mechanism.md) | 静默计时、主动消息及好感度 |
+| [本轮重构](docs/refactoring_and_ui.md) | 清理范围、界面调整及验证方法 |
 
-### 1.3 创新点
+## 本地开发
 
-1. **长短期记忆**：分层记忆系统，支持工作记忆、短期记忆、长期记忆、情景记忆
-2. **语言风格**：可配置的人设系统，支持口头禅、语气词、表达习惯
-3. **情感共鸣**：AI具有自己的情感状态，能感知并回应用户情绪
+```cmd
+conda activate Mypy
+python main.py
+python -m pytest -q
+```
+
+格式与静态检查使用 `ruff`（开发工具，需要时运行 `python -m pip install ruff`），规则在 `pyproject.toml`。业务测试使用替身模型，不访问真实模型接口；需要 Ollama 的手工演示保留在 `demos/memory_mvp_demo.py`。知识库上传入口为 `python -m streamlit run agent/rag_upload_ui.py`。
+
+修改记忆逻辑时保持 SQLite 表结构和 JSON schema 兼容；界面操作不应重复保存 Agent 已持久化的消息。新增功能应具备实际实现和调用链，再加入界面与事件总线。

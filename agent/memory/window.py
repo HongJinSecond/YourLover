@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TypeAlias
 
-
 # 消息对象类型（兼容 LangChain 各类 Message）
 Message: TypeAlias = object
 MessageList: TypeAlias = list[Message]

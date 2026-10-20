@@ -25,6 +25,8 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from utils.config_manager import config as app_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,7 +56,7 @@ class ProactiveEngine(QObject):
           委屈的消息了（好感度惩罚在发信号前已由引擎执行）。
 
     参数：
-        - settings: 配置对象（ConfigManager 或 Settings，属性访问）；
+        - settings: 配置对象（ConfigManager 或支持属性访问的配置桩）；
         - affinity_service: 好感度服务，生气时扣好感度；None 则只发消息不扣分；
         - user_id: 好感度归属用户；
         - initial_last_activity: 启动时的最后用户活跃时间戳（如从 SQLite
@@ -86,24 +88,20 @@ class ProactiveEngine(QObject):
         self._rng = rng or random.uniform
         self._randint = randint or random.randint
 
-        # 配置读取（ConfigManager 属性访问；缺键时回落到 Settings 默认值）
-        from core.config import Settings as _Defaults
-
-        self._enabled = bool(
-            getattr(settings, "PROACTIVE_ENABLED", _Defaults.PROACTIVE_ENABLED)
-        )
+        # 部分配置桩缺键时回落到当前 config.json，不再维护 Python 默认配置。
+        self._enabled = bool(getattr(settings, "PROACTIVE_ENABLED", app_config.PROACTIVE_ENABLED))
         self._min_idle = int(
             getattr(
                 settings,
                 "PROACTIVE_MIN_IDLE_SECONDS",
-                _Defaults.PROACTIVE_MIN_IDLE_SECONDS,
+                app_config.PROACTIVE_MIN_IDLE_SECONDS,
             )
         )
         self._max_idle = int(
             getattr(
                 settings,
                 "PROACTIVE_MAX_IDLE_SECONDS",
-                _Defaults.PROACTIVE_MAX_IDLE_SECONDS,
+                app_config.PROACTIVE_MAX_IDLE_SECONDS,
             )
         )
         self._max_nudges = max(
@@ -112,40 +110,38 @@ class ProactiveEngine(QObject):
                 getattr(
                     settings,
                     "PROACTIVE_MAX_IGNORED_NUDGES",
-                    _Defaults.PROACTIVE_MAX_IGNORED_NUDGES,
+                    app_config.PROACTIVE_MAX_IGNORED_NUDGES,
                 )
             ),
         )
         tick_seconds = int(
-            getattr(settings, "PROACTIVE_TICK_SECONDS", _Defaults.PROACTIVE_TICK_SECONDS)
+            getattr(settings, "PROACTIVE_TICK_SECONDS", app_config.PROACTIVE_TICK_SECONDS)
         )
         self._penalty_min = int(
             getattr(
                 settings,
                 "PROACTIVE_ANGRY_PENALTY_MIN",
-                _Defaults.PROACTIVE_ANGRY_PENALTY_MIN,
+                app_config.PROACTIVE_ANGRY_PENALTY_MIN,
             )
         )
         self._penalty_max = int(
             getattr(
                 settings,
                 "PROACTIVE_ANGRY_PENALTY_MAX",
-                _Defaults.PROACTIVE_ANGRY_PENALTY_MAX,
+                app_config.PROACTIVE_ANGRY_PENALTY_MAX,
             )
         )
         self._cooldown = int(
             getattr(
                 settings,
                 "PROACTIVE_COOLDOWN_SECONDS",
-                _Defaults.PROACTIVE_COOLDOWN_SECONDS,
+                app_config.PROACTIVE_COOLDOWN_SECONDS,
             )
         )
 
         # 状态机初始值：从上次活跃时间开始静默计时（支持跨启动的"你没理我"）
         self._last_activity = float(
-            initial_last_activity
-            if initial_last_activity is not None
-            else time.time()
+            initial_last_activity if initial_last_activity is not None else time.time()
         )
         self._stage = ProactiveStage.IDLE
         self._nudges_sent = 0
@@ -222,7 +218,12 @@ class ProactiveEngine(QObject):
             self.checkInRequested.emit(
                 self._build_check_in_instruction(elapsed, idle_text, self._nudges_sent)
             )
-            logger.info("主动问候已触发（第 %d/%d 次，静默 %s）", self._nudges_sent, self._nudge_limit, idle_text)
+            logger.info(
+                "主动问候已触发（第 %d/%d 次，静默 %s）",
+                self._nudges_sent,
+                self._nudge_limit,
+                idle_text,
+            )
             return
 
         # 问候被无视达到上限：生气 + 扣好感度 + 沉默
@@ -230,7 +231,12 @@ class ProactiveEngine(QObject):
         if self._affinity_service is not None:
             try:
                 new_love = self._affinity_service.apply_delta(self._user_id, -penalty)
-                logger.warning("主动消息被无视 %d 次，好感度 -%d（现为 %d）", self._nudges_sent, penalty, new_love)
+                logger.warning(
+                    "主动消息被无视 %d 次，好感度 -%d（现为 %d）",
+                    self._nudges_sent,
+                    penalty,
+                    new_love,
+                )
             except Exception as exc:  # 好感度扣减失败不阻塞生气消息
                 logger.warning("生气惩罚扣好感度失败：%s", exc)
         self._stage = ProactiveStage.SILENT
@@ -264,19 +270,17 @@ class ProactiveEngine(QObject):
         """随机决定本周期生气前最多被无视的问候次数（2 ~ max_nudges）。"""
         return int(self._randint(2, self._max_nudges))
 
-    def _build_check_in_instruction(
-        self, elapsed: float, idle_text: str, nudge_index: int
-    ) -> str:
+    def _build_check_in_instruction(self, elapsed: float, idle_text: str, nudge_index: int) -> str:
         """构造温和问候的隐藏指令（注入 system prompt，用户不可见）。"""
         tone_hint = (
-            "这是你第一次主动找他，语气轻松自然就好"
+            "这是你第一次主动找用户，语气轻松自然就好"
             if nudge_index == 1
-            else f"这是你第 {nudge_index} 次主动找他，他还是没回，可以更直接地表达想他、关心他在忙什么"
+            else f"这是你第 {nudge_index} 次主动找用户，对方暂时没回，可以轻轻表达关心，不催促"
         )
         return (
-            f"距离用户上次回复已经过去了约 {idle_text}，他一直没有说话。{tone_hint}。"
-            "请你以小爱的身份主动给他发一条消息（就像真人朋友主动发微信那样）："
-            "可以关心他在忙什么、分享你那边此刻正在发生的小事，"
+            f"距离用户上次回复已经过去了约 {idle_text}，用户暂时没有回复。{tone_hint}。"
+            "请你以当前人物设定的身份主动给用户发一条消息，保持自然的日常聊天口吻："
+            "可以关心对方在忙什么、分享一点角色日常，"
             "或者接着你们之前聊到一半的话题继续说。"
             "只输出这条消息本身，不要解释你在做什么，末尾照常带情绪标记和 {{0}} 增量标记。"
         )
@@ -286,10 +290,9 @@ class ProactiveEngine(QObject):
     ) -> str:
         """构造生气委屈消息的隐藏指令。"""
         return (
-            f"你已经主动找了用户 {nudge_count} 次，隔了约 {idle_text} 他一次都没有回你。"
-            "你现在又生气又委屈，觉得被他冷落了。"
-            "请你以小爱的身份发一条生气委屈的消息：可以质问他为什么不理你、"
-            "说点赌气的话（比如'哼，不理我就算了'），符合你温柔但有小脾气的性格——"
-            "生气归生气，不是真的要绝交，仍然在意他。"
+            f"你已经主动找了用户 {nudge_count} 次，隔了约 {idle_text} 对方暂时没有回复。"
+            "这是本周期最后一次主动消息，可以表达一点失落或委屈。"
+            "请以当前人物设定的身份发一条简短消息，可以表达轻微失落或不满，"
+            "但尊重用户可能在忙，不质问、查岗、威胁或要求对方证明在乎你。"
             "只输出这条消息本身，不要解释机制，末尾照常带情绪标记和 {{0}} 增量标记。"
         )

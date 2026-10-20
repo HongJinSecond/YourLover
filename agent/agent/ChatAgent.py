@@ -4,7 +4,7 @@
 对话中完成：
 
     加载短期记忆（仅切换/重启时）→ 加载运行时上下文（好感度+画像，每轮）
-    → 检索长期记忆（每轮）→ 注入用户输入 → 情感分析（存根）→ LLM/工具调用
+    → 检索长期记忆（每轮）→ 注入用户输入 → LLM/工具调用
     → 写入画像候选 → 合并提取并裁剪短期窗口（LLM 一次产出摘要+长期记忆）
     → 解析回复中的好感度增量标记并持久化 → 发射好感度事件 → 保存短期记忆
 
@@ -35,14 +35,13 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from agent.affinity.service import AffinityService
-from core.config import Settings
 from agent.memory.EmotionMemory import EmotionState
-from agent.memory.MemoryItem import MemoryItem
 from agent.memory.llm_extractor import (
     LLMMemoryExtractor,
     MemoryExtractionError,
 )
 from agent.memory.long_term_memory import LongTermMemory, VectorMemoryStore
+from agent.memory.MemoryItem import MemoryItem
 from agent.memory.profile_service import (
     ProfileCandidateExtractionError,
     UserProfileManager,
@@ -50,9 +49,9 @@ from agent.memory.profile_service import (
 )
 from agent.memory.short_term_memory import ShortTermMemory
 from agent.memory.window import Message
+from agent.prompts import compose_system_prompt, get_persona_prompt
 from agent.tools import tool_map
-
-from utils.config_manager import config
+from utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +108,7 @@ class ChatAgent:
     def __init__(
         self,
         llm: Any,
-        config: Settings,
+        config: ConfigManager,
         session: dict[str, Any],
         *,
         short_term_memory: ShortTermMemory | None = None,
@@ -139,7 +138,7 @@ class ChatAgent:
         self.session_id = None
         self.llm = llm
         self.tools = tool_map
-        self.system_prompt = config.TEST_SYSTEM_PROMPT
+        self.persona_prompt = get_persona_prompt(config)
         # 三大记忆管理器：窗口参数（max_messages/keep_recent_turns）由 ShortTermMemory 持有
         self.short_term_memory = short_term_memory or ShortTermMemory(
             max_messages=config.SHORT_TERM_MEMORY_MAX_MESSAGES,
@@ -180,15 +179,16 @@ class ChatAgent:
         user_id 标识长期记忆归属；session_id（或 LangGraph 的 thread_id）
         标识短期会话状态。两者缺省时分别回退到 "default-user"/"default-session"。
         """
+        # Snapshot once per turn: settings take effect on the next invocation,
+        # never halfway through a tool-calling loop already in progress.
+        self.persona_prompt = get_persona_prompt(self.config)
         runtime_session = session or self.session
         configurable = dict(runtime_session.get("configurable") or {})
         payload = dict(user_input)
         session_id = str(
             payload.get("session_id") or configurable.get("thread_id") or "default-session"
         )
-        user_id = str(
-            payload.get("user_id") or configurable.get("user_id") or "default-user"
-        )
+        user_id = str(payload.get("user_id") or configurable.get("user_id") or "default-user")
         configurable["thread_id"] = session_id
         runtime_session = {**runtime_session, "configurable": configurable}
         payload.update(user_id=user_id, session_id=session_id)
@@ -209,7 +209,7 @@ class ChatAgent:
                         -> load_runtime_context -> retrieve_long_term_memory -> user_input
                 "skip"（同 Session 后续轮次）: load_runtime_context
                         -> retrieve_long_term_memory -> user_input
-            公共链路: user_input -> emotion_analysis -> llm
+            公共链路: user_input -> llm
                       -> (条件) tools 或 write_profile_candidate
             tools -> llm（工具执行后回到 LLM 继续生成）
             write_profile_candidate -> trim_short_term_window
@@ -226,7 +226,6 @@ class ChatAgent:
         graph.add_node("load_runtime_context", self._load_runtime_context)
         graph.add_node("retrieve_long_term_memory", self._retrieve_long_term_memory)
         graph.add_node("user_input", self._user_input)
-        graph.add_node("emotion_analysis", self._emotion_analysis)
         graph.add_node("llm", self._chat)
         graph.add_node("tools", self._tool_call)
         graph.add_node("write_profile_candidate", self._write_profile_candidate)
@@ -243,8 +242,7 @@ class ChatAgent:
         graph.add_edge("load_short_term_memory", "load_runtime_context")
         graph.add_edge("load_runtime_context", "retrieve_long_term_memory")
         graph.add_edge("retrieve_long_term_memory", "user_input")
-        graph.add_edge("user_input", "emotion_analysis")
-        graph.add_edge("emotion_analysis", "llm")
+        graph.add_edge("user_input", "llm")
         graph.add_conditional_edges(
             "llm", self._should_call_tool, {"tools": "tools", "write": "write_profile_candidate"}
         )
@@ -319,11 +317,7 @@ class ChatAgent:
             message = item.message
             if isinstance(message, AIMessage) and _is_blank_ai_reply(message):
                 message = AIMessage(content=_EMPTY_REPLY_FALLBACK, id=message.id)
-            if (
-                isinstance(message, AIMessage)
-                and restored
-                and isinstance(restored[-1], AIMessage)
-            ):
+            if isinstance(message, AIMessage) and restored and isinstance(restored[-1], AIMessage):
                 restored.append(HumanMessage(content=_PROACTIVE_PLACEHOLDER))
             restored.append(message)
         return restored
@@ -373,9 +367,7 @@ class ChatAgent:
                 None,
             )
             query = str(last_human or "")
-        return {
-            "memory_context": self.long_term_memory.retrieve_context(user_id, query)
-        }
+        return {"memory_context": self.long_term_memory.retrieve_context(user_id, query)}
 
     def _save_short_term_memory(self, state: EmotionState) -> dict[str, Any]:
         """保存短期记忆：持久化本轮新增事件并同步 Session 摘要。
@@ -399,9 +391,7 @@ class ChatAgent:
                     str(getattr(item.message, "id", None))
                     or f"{session_id}:{item.speak_time!r}:proactive"
                 )
-                self.short_term_memory.save_turn(
-                    user_id, session_id, [item], event_ids=[event_id]
-                )
+                self.short_term_memory.save_turn(user_id, session_id, [item], event_ids=[event_id])
             else:
                 self.short_term_memory.create_session(user_id, session_id)
             # 主动轮结束统一清空隐藏指令（save 是图的最后一个节点）；
@@ -477,15 +467,9 @@ class ChatAgent:
                     speaker="User",
                     message=user_message,  # 必须存消息对象：SQLite 序列化与 .content 访问都依赖它
                     love=state["love_snapshot"],
-                    user_emo=None,
                 )
             ],
         }
-
-    def _emotion_analysis(self, state: EmotionState) -> dict[str, Any]:
-        """情感分析节点（M7 存根）：当前不做真实分析，保留节点边界供后续替换。"""
-        # M7 keeps the existing node boundary; a real analyzer can replace this stub.
-        return {"user_emo": None}
 
     def _chat(self, state: EmotionState) -> dict[str, Any]:
         """调用 LLM 生成回复。
@@ -539,24 +523,21 @@ class ChatAgent:
                     logger.warning("LLM 重试仍为空回复，使用兜底文案占位")
                     response = AIMessage(content=_EMPTY_REPLY_FALLBACK)
         # 主动轮把占位与 AI 回复一并写回，保证后续轮次历史交替合法
-        result: dict[str, Any] = {"messages": [placeholder, response] if placeholder else [response]}
+        result: dict[str, Any] = {
+            "messages": [placeholder, response] if placeholder else [response]
+        }
         result["history"] = [
             MemoryItem(
                 type="Chat",
                 speaker="AI",
                 message=response,
                 love=state["love_snapshot"],
-                user_emo=state.get("user_emo"),
             )
         ]
-        # 调试打印：带消息类型标签，空内容一眼可辨
-        for message in messages:
-            print(f"[{type(message).__name__}] {message.content}")
-            print("-----------------")
         return result
 
     def _assemble_system_prompt(self, state: EmotionState) -> str:
-        """组装 system prompt：基础提示 + 当前时间 + 上次对话时间 + 好感度 + 画像 + 长期记忆 + 摘要。
+        """组装 system prompt：本轮人设快照 + 运行时上下文 + 固定全局规则。
 
         当前时间让模型感知"现在是什么时候"；上次用户回复时间与距今间隔
         赋予模型时间感知（隔了很久要表达想念/小抱怨，刚聊过则自然继续）；
@@ -571,7 +552,6 @@ class ChatAgent:
         profile_context = state.get("profile_context") or "（暂无用户画像）"
         session_summary = state.get("session_summary") or "（暂无短期会话摘要）"
         prompt = (
-            f"{self.system_prompt}\n\n"
             f"当前时间：{now_str}\n"
             f"{last_time_line}\n"
             f"当前好感度快照：{state['love_snapshot']}（0-100）。\n"
@@ -588,7 +568,7 @@ class ChatAgent:
                 "\n\n【主动消息指令（系统内部指令，仅本轮生效，绝不向用户提及）】\n"
                 f"{proactive_context}"
             )
-        return prompt
+        return compose_system_prompt(self.persona_prompt, prompt)
 
     def _last_user_reply_line(self, state: EmotionState, now: datetime) -> str:
         """生成"上次用户回复时间"提示行，赋予模型时间感知。
@@ -651,9 +631,7 @@ class ChatAgent:
                     result = self.tools[tool_name].invoke(tool_args)
                 except Exception as exc:  # 工具失败时把错误回传给 LLM
                     result = f"工具执行失败: {exc}"
-            tool_message = ToolMessage(
-                content=str(result), tool_call_id=tool_call.get("id", "")
-            )
+            tool_message = ToolMessage(content=str(result), tool_call_id=tool_call.get("id", ""))
             tool_messages.append(tool_message)
             history.append(
                 MemoryItem(
@@ -661,7 +639,6 @@ class ChatAgent:
                     speaker="AI",
                     message=tool_message,  # 存消息对象，保持与 SQLite 序列化约定一致
                     love=state["love_snapshot"],
-                    user_emo=state.get("user_emo"),
                 )
             )
         return {"messages": tool_messages, "history": history}
@@ -720,9 +697,7 @@ class ChatAgent:
 
         return {
             "profile_candidate_ids": [
-                result.candidate_id
-                for result in results
-                if result.candidate_id is not None
+                result.candidate_id for result in results if result.candidate_id is not None
             ]
         }
 
@@ -761,11 +736,7 @@ class ChatAgent:
         user_id = state["user_id"]
         messages = state.get("messages") or []
         last_ai = next(
-            (
-                message
-                for message in reversed(messages)
-                if isinstance(message, AIMessage)
-            ),
+            (message for message in reversed(messages) if isinstance(message, AIMessage)),
             None,
         )
         ai_reply = str(getattr(last_ai, "content", "") or "")
@@ -814,9 +785,7 @@ class ChatAgent:
         messages = state.get("messages") or []
         _, removed = self.short_term_memory.trim_window(messages)
         removals = [
-            RemoveMessage(id=message.id)
-            for message in removed
-            if getattr(message, "id", None)
+            RemoveMessage(id=message.id) for message in removed if getattr(message, "id", None)
         ]
         result: dict[str, Any] = {"messages": removals, "memory_write_ids": []}
 
@@ -835,7 +804,7 @@ class ChatAgent:
             )
             result["memory_write_ids"] = memory_ids
             if extraction.summary:
-                result["session_summary"] = extraction.summary[:config.SUMMARY_MAX_CHARS]
+                result["session_summary"] = extraction.summary[: self.config.SUMMARY_MAX_CHARS]
         except MemoryExtractionError as exc:
             # LLM 合并提取失败：降级为规则提取 + 规则摘要，聊天不中断
             logger.warning("LLM 合并提取失败，降级为规则提取+规则摘要：%s", exc)
@@ -878,21 +847,17 @@ class ChatAgent:
                 continue
             speaker = speakers.get(getattr(message, "type", ""), "用户")
             message_time = time_by_message.get(id(message))
-            time_str = (
-                message_time.strftime("%Y-%m-%d %H:%M")
-                if message_time is not None
-                else None
-            )
-            fragments.append((speaker, content[:config.SUMMARY_FRAGMENT_MAX_CHARS], time_str))
+            time_str = message_time.strftime("%Y-%m-%d %H:%M") if message_time is not None else None
+            fragments.append((speaker, content[: self.config.SUMMARY_FRAGMENT_MAX_CHARS], time_str))
         return fragments
 
-    @staticmethod
     def _legacy_session_summary(
+        self,
         previous_summary: str,
         fragments: list[tuple[str, str]],
     ) -> str:
-        """降级摘要策略：旧摘要 + 新片段（每条截 80 字）拼接，总长限 1000 字。"""
+        """降级摘要策略：旧摘要 + 新片段，遵循当前配置的摘要长度上限。"""
         new_summary = "；".join(content[:80] for _, content in fragments)
-        return "；".join(
-            part for part in (previous_summary, new_summary) if part
-        )[-config.SUMMARY_MAX_CHARS:]
+        return "；".join(part for part in (previous_summary, new_summary) if part)[
+            -self.config.SUMMARY_MAX_CHARS :
+        ]

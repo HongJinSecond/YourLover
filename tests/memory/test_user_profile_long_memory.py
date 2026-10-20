@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from agent.memory.profile_candidate import ProfileCandidate
 from agent.memory.profile_service import (
     DEFAULT_PROFILE_MODEL,
     OllamaProfileCandidateExtractor,
@@ -15,7 +16,6 @@ from agent.memory.profile_service import (
     ProfileCandidateProposal,
     UserProfileManager,
 )
-from agent.memory.profile_candidate import ProfileCandidate
 from agent.memory.profile_store import ProfileConflictError, ProfileStore
 from agent.memory.schema import MemoryEvidence
 from agent.memory.user_profile import (

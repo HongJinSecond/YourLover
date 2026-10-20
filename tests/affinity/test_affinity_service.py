@@ -64,12 +64,8 @@ def test_service_accepts_event_and_keeps_users_isolated(tmp_path):
     assert service.emit_affinity_event("u1", {"type": "user_thanked"}) is None
     service.emit_affinity_event("u2", {"type": "user_complained"})
 
-    assert [item.event for item in service.get_events("u1")] == [
-        {"type": "user_thanked"}
-    ]
-    assert [item.event for item in service.get_events("u2")] == [
-        {"type": "user_complained"}
-    ]
+    assert [item.event for item in service.get_events("u1")] == [{"type": "user_thanked"}]
+    assert [item.event for item in service.get_events("u2")] == [{"type": "user_complained"}]
 
 
 def test_recorded_event_is_a_defensive_copy(tmp_path):

@@ -13,7 +13,7 @@ from agent.memory.profile_store import ProfileStore
 from agent.memory.session_store import SessionStore
 from agent.memory.short_term_memory import ShortTermMemory
 from agent.memory.store import FileMemoryStore
-from core.config import Settings
+from utils.config_manager import ConfigManager
 
 
 class NoopCandidateExtractor(ProfileCandidateExtractor):
@@ -53,7 +53,7 @@ def _build_agent(tmp_path, llm, session_store):
     )
     return ChatAgent(
         llm,
-        Settings(),
+        ConfigManager(),
         {"configurable": {"thread_id": "default"}},
         short_term_memory=short_term,
         long_term_memory=long_term,
@@ -67,22 +67,14 @@ def test_recreated_agent_restores_short_term_session(tmp_path):
     first_llm = RecordingLLM()
     first_agent = _build_agent(tmp_path, first_llm, session_store)
 
-    first_agent.invoke(
-        {"user_input": "第一轮", "user_id": "u1", "session_id": "s1"}
-    )
-    first_agent.invoke(
-        {"user_input": "第二轮", "user_id": "u1", "session_id": "s1"}
-    )
+    first_agent.invoke({"user_input": "第一轮", "user_id": "u1", "session_id": "s1"})
+    first_agent.invoke({"user_input": "第二轮", "user_id": "u1", "session_id": "s1"})
 
     second_llm = RecordingLLM()
     second_agent = _build_agent(tmp_path, second_llm, session_store)
-    second_agent.invoke(
-        {"user_input": "第三轮", "user_id": "u1", "session_id": "s1"}
-    )
+    second_agent.invoke({"user_input": "第三轮", "user_id": "u1", "session_id": "s1"})
 
-    received_contents = [
-        getattr(message, "content", "") for message in second_llm.calls[0][1:]
-    ]
+    received_contents = [getattr(message, "content", "") for message in second_llm.calls[0][1:]]
     assert received_contents == [
         "第一轮",
         "固定回复",

@@ -53,11 +53,7 @@ def test_parses_summary_and_memories_separated_by_markers():
 
 def test_empty_memories_when_none_worth_storing():
     llm = StubLLM(
-        text=(
-            "<<<SESSION_SUMMARY>>>\n"
-            "日常闲聊，无重要信息。\n"
-            "<<<LONG_TERM_MEMORIES>>>\n"
-        )
+        text=("<<<SESSION_SUMMARY>>>\n日常闲聊，无重要信息。\n<<<LONG_TERM_MEMORIES>>>\n")
     )
     result = _extractor(llm).extract([("用户", "你好", None)])
 
@@ -104,11 +100,12 @@ def test_summary_truncated_to_safety_limit():
 
 
 def test_llm_failure_raises_memory_extraction_error():
-    llm = StubLLM(error=RuntimeError("连接失败"))
+    llm = StubLLM(error=RuntimeError("连接失败 sensitive-api-key"))
     try:
         _extractor(llm).extract([("用户", "内容", None)])
     except MemoryExtractionError as exc:
-        assert "连接失败" in str(exc)
+        assert "RuntimeError" in str(exc)
+        assert "sensitive-api-key" not in str(exc)
     else:  # pragma: no cover
         raise AssertionError("应当抛出 MemoryExtractionError")
 

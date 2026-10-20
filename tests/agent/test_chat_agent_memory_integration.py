@@ -24,7 +24,8 @@ from agent.memory.session_store import SessionStore
 from agent.memory.short_term_memory import ShortTermMemory
 from agent.memory.store import FileMemoryStore
 from agent.memory.user_profile import ProfileActor
-from core.config import Settings
+from agent.prompts import DEFAULT_PERSONA_PROMPT, GLOBAL_SYSTEM_RULES
+from utils.config_manager import ConfigManager
 
 
 class RecordingLLM:
@@ -161,7 +162,7 @@ def _agent(tmp_path, llm=None, *, extractor=None, **short_term_kwargs):
     affinity = AffinityService(store=AffinityStore(tmp_path / "affinity.sqlite3"))
     agent = ChatAgent(
         llm or RecordingLLM(),
-        Settings(),
+        ConfigManager(),
         {"configurable": {"thread_id": "default"}},
         short_term_memory=short_term,
         long_term_memory=long_term,
@@ -170,6 +171,56 @@ def _agent(tmp_path, llm=None, *, extractor=None, **short_term_kwargs):
         memory_extractor=extractor or FailingMemoryExtractor(),
     )
     return agent, long_term, affinity
+
+
+def test_injected_configuration_controls_summary_and_fragment_limits(tmp_path):
+    """摘要成功和降级分支都使用注入配置，不读取全局参数。"""
+    for label, extractor in [
+        ("success", StubMemoryExtractor(summary="一二三四五六七八九十")),
+        ("fallback", FailingMemoryExtractor()),
+    ]:
+        agent, _, _ = _agent(
+            tmp_path / label,
+            extractor=extractor,
+            max_messages=4,
+            keep_recent_turns=1,
+        )
+        agent.config.update({"SUMMARY_MAX_CHARS": 7, "SUMMARY_FRAGMENT_MAX_CHARS": 3}, save=False)
+        for turn in ["第一轮较长消息", "第二轮较长消息", "第三轮较长消息"]:
+            state = agent.invoke({"user_input": turn, "user_id": "user-a", "session_id": label})
+        assert extractor.calls
+        assert all(
+            len(content) <= 3 for content in [fragment[1] for fragment in extractor.calls[0][0]]
+        )
+        assert len(state["session_summary"]) == 7
+
+
+def test_persona_is_snapshotted_per_turn_and_global_rules_survive_tool_calls(tmp_path):
+    class ChangingPersonaLLM(ToolCallingLLM):
+        def invoke(self, messages):
+            if not self.calls:
+                agent.config.update({"CUSTOM_PERSONA_PROMPT": "下一轮的摄影师阿林"}, save=False)
+            return super().invoke(messages)
+
+    llm = ChangingPersonaLLM()
+    agent, _, _ = _agent(tmp_path, llm)
+    agent.config.update(
+        {"PERSONA_PROMPT_MODE": "custom", "CUSTOM_PERSONA_PROMPT": "本轮的老师小陈"}, save=False
+    )
+    payload = {"user_input": "计算一下 3**2+5", "user_id": "user-a", "session_id": "prompt-test"}
+    agent.invoke(payload)
+    assert len(llm.calls) == 2
+    for messages in llm.calls:
+        assert "本轮的老师小陈" in messages[0].content
+        assert "下一轮的摄影师阿林" not in messages[0].content
+        assert messages[0].content.endswith(GLOBAL_SYSTEM_RULES)
+    agent.invoke({**payload, "user_input": "你好"})
+    assert "下一轮的摄影师阿林" in llm.calls[-1][0].content
+    assert "本轮的老师小陈" not in llm.calls[-1][0].content
+    agent.config.update({"PERSONA_PROMPT_MODE": "default"}, save=False)
+    agent.invoke({**payload, "user_input": "再见"})
+    assert DEFAULT_PERSONA_PROMPT in llm.calls[-1][0].content
+    assert llm.calls[-1][0].content.endswith(GLOBAL_SYSTEM_RULES)
 
 
 def test_llm_extraction_writes_memory_and_recalled_in_new_session(tmp_path):
@@ -243,9 +294,7 @@ def test_same_session_refreshes_long_term_memory_every_turn(tmp_path):
     llm = RecordingLLM()
     agent, long_term, _ = _agent(tmp_path, llm, max_messages=4, keep_recent_turns=1)
     # 预置一条记忆，验证每轮检索都会刷新（而非只在加载时）
-    long_term.write_llm_memories(
-        "user-a", [LLMMemoryEntry("semantic", "用户偏好：喜欢喝咖啡")]
-    )
+    long_term.write_llm_memories("user-a", [LLMMemoryEntry("semantic", "用户偏好：喜欢喝咖啡")])
     session = {"configurable": {"thread_id": "same", "user_id": "user-a"}}
 
     first = agent.invoke({"user_input": "喝咖啡"}, session=session)
@@ -321,9 +370,7 @@ def test_explicit_profile_statement_creates_and_applies_candidate(tmp_path):
 
     # 下一轮 system prompt 应注入已生效的画像
     agent.user_profile_manager.candidate_extractor = StubCandidateExtractor()
-    agent.invoke(
-        {"user_input": "你好", "user_id": "user-a", "session_id": "session-1"}
-    )
+    agent.invoke({"user_input": "你好", "user_id": "user-a", "session_id": "session-1"})
     assert "昵称：阿辰" in llm.calls[-1][0].content
 
 
@@ -348,9 +395,7 @@ def test_non_profile_message_skips_profile_extraction(tmp_path):
     """未命中画像触发词的消息不应调用候选模型（性能优化）。"""
     llm = RecordingLLM()
     agent, _, _ = _agent(tmp_path, llm)
-    extractor = StubCandidateExtractor(
-        [_nickname_proposal("user-a", "阿辰", "以后叫我阿辰")]
-    )
+    extractor = StubCandidateExtractor([_nickname_proposal("user-a", "阿辰", "以后叫我阿辰")])
     agent.user_profile_manager.candidate_extractor = extractor
 
     # 普通闲聊：不命中触发词 → 提取器不被调用，画像不变
@@ -373,9 +418,7 @@ def test_non_profile_message_skips_profile_extraction(tmp_path):
 def test_short_term_messages_are_trimmed_by_complete_turn(tmp_path):
     llm = RecordingLLM()
     extractor = StubMemoryExtractor(summary="摘要：用户进行了三轮日常对话测试。")
-    agent, _, _ = _agent(
-        tmp_path, llm, extractor=extractor, max_messages=4, keep_recent_turns=1
-    )
+    agent, _, _ = _agent(tmp_path, llm, extractor=extractor, max_messages=4, keep_recent_turns=1)
     session = {"configurable": {"thread_id": "trim-session", "user_id": "user-a"}}
 
     agent.invoke({"user_input": "第一轮"}, session=session)
@@ -427,9 +470,7 @@ def test_affinity_starts_at_zero_and_increases_each_round(tmp_path):
     agent, _, affinity = _agent(tmp_path, llm)
 
     # 初始为 0（第一轮 system prompt 里也是 0）
-    first = agent.invoke(
-        {"user_input": "你好呀", "user_id": "user-a", "session_id": "session-1"}
-    )
+    first = agent.invoke({"user_input": "你好呀", "user_id": "user-a", "session_id": "session-1"})
     # 返回的 love_snapshot 是轮末值（judge 节点已解析标记并累加写回 state）
     assert first["love_snapshot"] == 5
     assert affinity.get_love_snapshot("user-a") == 5
@@ -467,9 +508,7 @@ def test_negative_delta_clamped_at_zero(tmp_path):
     """回复带 <<-N>> 负增量标记时扣减好感度，但下限为 0。"""
     llm = AffectionateLLM(delta=-3)
     agent, _, affinity = _agent(tmp_path, llm)
-    state = agent.invoke(
-        {"user_input": "你好", "user_id": "user-a", "session_id": "session-1"}
-    )
+    state = agent.invoke({"user_input": "你好", "user_id": "user-a", "session_id": "session-1"})
 
     # 0 + (-3) 被钳制到下限 0，聊天不中断
     assert state["messages"][-1].content == "好的，我会温柔地陪着你。<<Happy>>{{-3}}"
@@ -480,9 +519,7 @@ def test_reply_without_delta_mark_keeps_love_unchanged(tmp_path):
     """回复未带增量标记（模型忘记输出）时，好感度不变，聊天不中断。"""
     llm = RecordingLLM()
     agent, _, affinity = _agent(tmp_path, llm)
-    state = agent.invoke(
-        {"user_input": "你好", "user_id": "user-a", "session_id": "session-1"}
-    )
+    state = agent.invoke({"user_input": "你好", "user_id": "user-a", "session_id": "session-1"})
 
     assert state["messages"][-1].content == "好的，我会温柔地陪着你。"
     assert affinity.get_love_snapshot("user-a") == 0
@@ -492,12 +529,9 @@ def test_existing_tool_loop_still_returns_tool_result_to_llm(tmp_path):
     llm = ToolCallingLLM()
     agent, _, _ = _agent(tmp_path, llm)
 
-    state = agent.invoke(
-        {"user_input": "计算 3**2+5", "user_id": "user-a", "session_id": "tools"}
-    )
+    state = agent.invoke({"user_input": "计算 3**2+5", "user_id": "user-a", "session_id": "tools"})
 
     assert state["messages"][-1].content == "计算结果是 14。"
     assert any(
-        isinstance(message, ToolMessage) and message.content == "14"
-        for message in llm.calls[1]
+        isinstance(message, ToolMessage) and message.content == "14" for message in llm.calls[1]
     )

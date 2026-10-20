@@ -5,7 +5,6 @@ from threading import Lock
 from agent.affinity.affinity_store import AffinityStore
 from agent.affinity.schema import AffinityEvent
 
-
 # 新用户初始好感度（0-100）
 DEFAULT_LOVE_SNAPSHOT = 0
 
@@ -33,9 +32,7 @@ class AffinityService:
             default_love_snapshot: 保留兼容参数，仅作为新用户初始值兜底。
         """
         # 拒绝 bool（Python 中 bool 是 int 的子类，需单独拦截）
-        if isinstance(default_love_snapshot, bool) or not isinstance(
-            default_love_snapshot, int
-        ):
+        if isinstance(default_love_snapshot, bool) or not isinstance(default_love_snapshot, int):
             raise TypeError("default_love_snapshot must be an int")
         if not 0 <= default_love_snapshot <= 100:
             raise ValueError("default_love_snapshot must be between 0 and 100")

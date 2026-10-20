@@ -153,9 +153,7 @@ def validate_profile_update(
     normalized_actor = normalize_profile_actor(actor)
 
     if normalized_actor not in policy.allowed_actors:
-        raise ProfileValidationError(
-            f"来源 {normalized_actor.value} 无权修改字段 {field_name}"
-        )
+        raise ProfileValidationError(f"来源 {normalized_actor.value} 无权修改字段 {field_name}")
 
     if value is None:
         if policy.allow_clear:
@@ -174,9 +172,7 @@ def validate_profile_update(
     if not cleaned_value:
         raise ProfileValidationError(f"字段 {field_name} 不能为空文本")
     if len(cleaned_value) > policy.max_length:
-        raise ProfileValidationError(
-            f"字段 {field_name} 最多允许 {policy.max_length} 个字符"
-        )
+        raise ProfileValidationError(f"字段 {field_name} 最多允许 {policy.max_length} 个字符")
     return cleaned_value
 
 

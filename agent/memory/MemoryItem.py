@@ -7,9 +7,10 @@ Date: 2026-06-25 12:13:25
 LastEditors: HongJin
 LastEditTime: 2026-06-25 13:31:02
 """
-from dataclasses import dataclass, asdict
+
+from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Dict, Optional
 
 from langchain_core.messages import BaseMessage
 
@@ -33,6 +34,7 @@ class MemoryItem:
         speak_time: 对话发生时间戳，默认取当前时间
         importance: 记忆重要程度，默认 0.5
     """
+
     # MEMORY_ID = None # 记忆的唯一标识符 (也许需要)
     type: str
     """判断记忆类型是不是对话记忆，如果是思考或者工具调用的记忆需要特殊处理。 (Chat, Think, ToolCall)"""
@@ -56,7 +58,7 @@ class MemoryItem:
         if self.speak_time is None:
             self.speak_time = datetime.now().timestamp()
 
-    #获取记忆内容添加到上下文中，根据记忆类型进行不同处理
+    # 获取记忆内容添加到上下文中，根据记忆类型进行不同处理
     def get_memory(self) -> str:
         """获取记忆内容用于上下文，根据记忆类型进行不同处理。
 
@@ -66,15 +68,15 @@ class MemoryItem:
         - 其它：退化为 "{speaker}: {content}"。
         """
         if self.type == "Chat":
-            #一般情况
+            # 一般情况
             return f"{self.speaker}: {self.message.content}"
 
         elif self.type == "Think":
-            #思考类型
+            # 思考类型
             return f"[思考] {self.message.content}"
 
         elif self.type == "ToolCall":
-            #工具调用类型
+            # 工具调用类型
             return f"[工具调用] {self.message.content}"
 
         else:
@@ -85,7 +87,7 @@ class MemoryItem:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'MemoryItem':
+    def from_dict(cls, data: dict) -> "MemoryItem":
         """从字典创建实例，用于反序列化（要求 data 的键与字段名完全匹配）。"""
         return cls(**data)
 

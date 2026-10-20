@@ -1,255 +1,196 @@
-"""
-聊天窗口顶部栏组件
-显示助手头像、状态文本、设置按钮等。
-"""
+"""Conversation title, live emotion and affinity, and settings entry."""
 
-from typing import Any, Callable
-
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QEvent, QPoint, Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
-    QWidget,
-    QProgressBar,          # 新增导入
 )
 
+from core.event_bus import event_bus
+from utils.config_manager import config
+from widgets.avatar import avatar_path, set_avatar
 from widgets.base.base_widget import BaseWidget
+from widgets.icons import icon
+from widgets.theme import ACCENT, ACCENT_SOFT, BORDER, BUTTON_STYLE, MUTED, SURFACE, TEXT, ui_font
 
 
 class ChatHeader(BaseWidget):
-    """聊天窗口顶部状态栏。
-
-    职责：
-    - 展示助手头像与名称（或状态文本）。
-    - 提供设置按钮入口。
-    - 暴露状态更新接口，便于外部同步 Agent 状态。
-
-    暴露接口：
-    - set_status(text): 更新状态文本。
-    - set_title(text): 更新标题。
-    - set_settings_callback(callback): 设置设置按钮回调。
-
-    信号：
-    - settings_clicked(): 设置按钮被点击时发射。
-    """
-
     settings_clicked = Signal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        """初始化顶部栏。
-
-        Args:
-            parent: 父级 QWidget。
-        """
-        self._title: str = "YourLover"
-        self._status: str = "在线"
-        # 新增内部状态，便于后续更新（好感度与 AffinityService 一致：初始 0）
-        self._affection_value: int = 0
-        self._emotional_state: str = "开心😊"
-        super().__init__(parent)
+    _EMOTIONS = {"Happy": "开心", "Sad": "低落", "Angry": "生气", "Shy": "害羞"}
 
     def setup_ui(self) -> None:
-        """创建顶部栏布局。"""
-        self._layout = QHBoxLayout(self)
-        self._layout.setContentsMargins(16, 10, 16, 10)
-        self._layout.setSpacing(12)
-
-        # 头像占位（后续可替换为 QLabel + QPixmap）
-        self._avatar_label = QLabel("🌸", self)
+        self._drag_position: QPoint | None = None
+        self.setFixedHeight(90)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(28, 18, 24, 18)
+        layout.setSpacing(12)
+        self._avatar_label = QLabel("Y", self)
         self._avatar_label.setObjectName("header_avatar")
-        self._avatar_label.setFont(QFont("Segoe UI Emoji", 20))
         self._avatar_label.setFixedSize(42, 42)
+        self._avatar_label.setFont(ui_font(16, True))
         self._avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # 标题与状态
-        self._title_label = QLabel(self._title, self)
-        self._title_label.setObjectName("title_label")
-        self._title_label.setFont(QFont("Microsoft YaHei", 12, QFont.Weight.Bold))
-
-        self._status_label = QLabel(self._status, self)
-        self._status_label.setObjectName("status_label")
-        self._status_label.setFont(QFont("Microsoft YaHei", 9))
-        self._status_label.setStyleSheet("color: #ec4899;")
-
-        # 左侧信息区
-        info_layout = QVBoxLayout()
-        info_layout.setSpacing(2)
-        info_layout.addWidget(self._title_label)
-        info_layout.addWidget(self._status_label)
-
-        #好感度和情绪
-        affection_layout = QHBoxLayout()
-        affection_layout.setSpacing(0)          # 改为0，让爱心、进度条、百分比紧贴
-        affection_layout.setContentsMargins(0, 0, 0, 0)
-
-
-        # 原有的 _affection_label 改为显示百分比数值（保留原属性名）
-        self._affection_label = QLabel(f"  {self._affection_value}❤️", self)
-        self._affection_label.setObjectName("affection_label")
-        self._affection_label.setFont(QFont("Microsoft YaHei", 9))
-        self._affection_label.setStyleSheet("color: #be185d; font-weight: bold;")
-
-
-        # 新增好感度进度条
+        info = QVBoxLayout()
+        info.setSpacing(4)
+        self._title_text = "YourLover"
+        self._title_label = QLabel("YourLover", self)
+        self._title_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._title_label.installEventFilter(self)
+        self._title_label.setFont(ui_font(12, True))
+        self._title_label.setStyleSheet(f"color: {TEXT};")
+        self._status_label = QLabel("陪你聊聊今天", self)
+        self._status_label.setFont(ui_font(9))
+        self._status_label.setStyleSheet(f"color: {MUTED};")
+        info.addWidget(self._title_label)
+        info.addWidget(self._status_label)
+        affinity = QVBoxLayout()
+        affinity.setSpacing(6)
+        affinity.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        self._affection_label = QLabel("好感度  0", self)
+        self._affection_label.setFont(ui_font(8))
+        self._affection_label.setStyleSheet(f"color: {MUTED};")
         self._affection_progress = QProgressBar(self)
         self._affection_progress.setObjectName("affection_progress")
         self._affection_progress.setRange(0, 100)
-        self._affection_progress.setValue(self._affection_value)
+        self._affection_progress.setValue(0)
         self._affection_progress.setTextVisible(False)
-        self._affection_progress.setFixedWidth(120)
-        self._affection_progress.setFixedHeight(16)
-
-        # 将图标、进度条和数值标签依次加入好感度布局
-        affection_layout.addWidget(self._affection_progress)
-        affection_layout.addWidget(self._affection_label)
-
-        # 情绪标签（保留原有属性，但样式改为圆角背景）
-        self._emotional_label = QLabel(self._emotional_state, self)
-        self._emotional_label.setObjectName("emotional_label")
-        self._emotional_label.setFont(QFont("Microsoft YaHei", 9))
+        self._affection_progress.setFixedSize(86, 5)
+        affinity.addWidget(self._affection_label)
+        affinity.addWidget(self._affection_progress)
+        self._emotional_label = QLabel("开心", self)
+        self._emotional_label.setObjectName("emotion_chip")
+        self._emotional_label.setFont(ui_font(9))
+        self._emotional_label.setFixedHeight(30)
         self._emotional_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._emotional_label.setFixedHeight(24)
-        # 初始样式在 apply_style 中统一设置
-
-        # 将好感度和情绪放在同一行，方便与标题对齐
-        status_widget = QWidget()
-        status_layout = QHBoxLayout(status_widget)
-        status_layout.setSpacing(12)
-        status_layout.addLayout(affection_layout)
-        status_layout.addWidget(self._emotional_label)
-        status_layout.setContentsMargins(0, 0, 0, 0)
-
-        # 设置按钮
-        self._settings_button = QPushButton("⚙", self)
-        self._settings_button.setObjectName("settings_btn")
+        self._settings_button = QPushButton(self)
+        self._settings_button.setProperty("iconOnly", True)
+        self._settings_button.setIcon(icon("settings"))
         self._settings_button.setFixedSize(38, 38)
-        self._settings_button.setToolTip("打开设置")
-        self._settings_button.setFont(QFont("Segoe UI Emoji", 14))
-
-        self._layout.addWidget(self._avatar_label)
-        self._layout.addLayout(info_layout)
-        self._layout.addWidget(status_widget, 1)   # 占用弹性空间
-        self._layout.addWidget(self._settings_button)
-
-        self.apply_style()
+        self._settings_button.setToolTip("设置")
+        self._settings_button.setAccessibleName("打开设置")
+        self._settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout.addWidget(self._avatar_label)
+        layout.addLayout(info, 1)
+        layout.addLayout(affinity)
+        layout.addSpacing(8)
+        layout.addWidget(self._emotional_label)
+        layout.addSpacing(4)
+        layout.addWidget(self._settings_button)
+        window_controls = QHBoxLayout()
+        window_controls.setSpacing(2)
+        self._minimize_button = QPushButton(self)
+        self._maximize_button = QPushButton(self)
+        self._close_button = QPushButton(self)
+        for button, name, tooltip in (
+            (self._minimize_button, "minimize", "最小化"),
+            (self._maximize_button, "maximize", "最大化 / 还原"),
+            (self._close_button, "close", "关闭聊天窗口"),
+        ):
+            button.setProperty("iconOnly", True)
+            button.setIcon(icon(name, size=16))
+            button.setFixedSize(28, 30)
+            button.setToolTip(tooltip)
+            button.setAccessibleName(tooltip)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            window_controls.addWidget(button)
+        layout.addLayout(window_controls)
+        self._refresh_identity()
 
     def connect_signals(self) -> None:
-        """连接设置按钮点击信号。"""
         self._settings_button.clicked.connect(self.settings_clicked.emit)
+        self._minimize_button.clicked.connect(lambda: self.window().showMinimized())
+        self._maximize_button.clicked.connect(self._toggle_maximized)
+        self._close_button.clicked.connect(lambda: self.window().close())
+        event_bus.settings_batch_changed.connect(self._on_settings_changed)
+
+    def _toggle_maximized(self) -> None:
+        window = self.window()
+        if window.isMaximized():
+            window.showNormal()
+        else:
+            window.showMaximized()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            handle = self.window().windowHandle()
+            if handle is None or not handle.startSystemMove():
+                self._drag_position = event.globalPosition().toPoint() - self.window().pos()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_position is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.window().move(event.globalPosition().toPoint() - self._drag_position)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_position = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_position = None
+            self._toggle_maximized()
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
+
+    def _on_settings_changed(self, values: dict) -> None:
+        if {"CHAT_DISPLAY_NAME", "CHAT_AVATAR"}.intersection(values):
+            self._refresh_identity()
+
+    def _refresh_identity(self) -> None:
+        self.set_title(getattr(config, "CHAT_DISPLAY_NAME", "YourLover") or "YourLover")
+        set_avatar(
+            self._avatar_label, avatar_path(getattr(config, "CHAT_AVATAR", ""), config.config_dir)
+        )
 
     def apply_style(self) -> None:
-        """应用顶部栏样式（卡通游戏风）。"""
         self.setStyleSheet(
-            """
-            ChatHeader {
-                background-color: #fffafc;
-                border-bottom: 1.5px solid #fce7f3;
-            }
-            QLabel#header_avatar {
-                background-color: #fce7f3;
-                border-radius: 21px;
-                border: 2px solid #fbcfe8;
-            }
-            QLabel#title_label {
-                color: #be185d;
-                background-color: transparent;
-            }
-            QPushButton#settings_btn {
-                border: none;
-                background-color: #fce7f3;
-                border-radius: 19px;
-                color: #be185d;
-            }
-            QPushButton#settings_btn:hover {
-                background-color: #fbcfe8;
-            }
-            QPushButton#settings_btn:pressed {
-                background-color: #f9a8d4;
-            }
-            /* 新增进度条样式 */
-            QProgressBar#affection_progress {
-                border: none;
-                background-color: #fce7f3;
-                border-radius: 8px;
-                height: 16px;
-                margin: 0;          /* 去除外边距 */
-                padding: 0;         /* 去除内边距 */
-            }
-            QProgressBar#affection_progress::chunk {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #f472b6, stop:1 #be185d);
-                border-radius: 8px;
-            }
-            /* 情绪标签样式（在代码中动态更新，这里保留默认） */
-            QLabel#emotional_label {
-                background-color: #fce7f3;
-                border-radius: 12px;
-                padding: 0 12px;
-                color: #be185d;
-            }
-            """
-        )
-
-    # ---------- 新增更新接口（保留原有接口不变） ----------
-    def set_affection(self, value: int) -> None:
-        """更新好感度数值（0~100），进度条和数值同步变化"""
-        clamped = max(0, min(100, value))
-        self._affection_value = clamped
-        self._affection_progress.setValue(clamped)
-        self._affection_label.setText(f"{clamped}%")
-
-    def set_emotional(self, state: str, color: str = "#be185d", bg_color: str = "#fce7f3") -> None:
-        """更新情绪状态，可自定义文字颜色和背景色"""
-        self._emotional_state = state
-        self._emotional_label.setText(state)
-        self._emotional_label.setStyleSheet(
-            f"""
-            QLabel#emotional_label {{
-                background-color: {bg_color};
-                border-radius: 12px;
-                padding: 0 12px;
-                color: {color};
-            }}
-            """
-        )
-
-    # ------------------ 以下为原有接口（完全保留） ------------------
-    def set_status(self, text: str, color: str = "#ec4899") -> None:
-        """设置状态文本与颜色。
-
-        Args:
-            text: 状态文本，如 "思考中..."、"在线"。
-            color: 状态文本颜色（hex）。
+            BUTTON_STYLE
+            + f"""
+            ChatHeader {{ background: {SURFACE}; border-bottom: 1px solid {BORDER}; color: {TEXT}; }}
+            QLabel#header_avatar {{ background: {ACCENT_SOFT}; color: {ACCENT}; border-radius: 13px; }}
+            QLabel#emotion_chip {{ background: {ACCENT_SOFT}; color: {ACCENT}; border-radius: 12px; padding: 5px 12px; }}
+            QProgressBar#affection_progress {{ background: {ACCENT_SOFT}; border: none; border-radius: 2px; }}
+            QProgressBar#affection_progress::chunk {{ background: {ACCENT}; border-radius: 2px; }}
         """
-        self._status = text
+        )
+
+    def set_affection(self, value: int) -> None:
+        value = max(0, min(100, value))
+        self._affection_progress.setValue(value)
+        self._affection_label.setText(f"好感度  {value}")
+
+    def set_emotional(self, state: str) -> None:
+        self._emotional_label.setText(self._EMOTIONS.get(state, state))
+
+    def set_status(self, text: str, color: str = MUTED) -> None:
         self._status_label.setText(text)
         self._status_label.setStyleSheet(f"color: {color};")
 
     def set_title(self, text: str) -> None:
-        """设置标题文本。
-
-        Args:
-            text: 标题文本。
-        """
-        self._title = text
+        self._title_text = text
         self._title_label.setText(text)
+        self._title_label.setToolTip(text)
+        self._elide_title()
 
-    def set_settings_callback(self, callback: Callable[[], None]) -> None:
-        """设置设置按钮的回调函数。
+    def _elide_title(self) -> None:
+        if self._title_label.isVisible():
+            self._title_label.setText(
+                self._title_label.fontMetrics().elidedText(
+                    self._title_text, Qt.TextElideMode.ElideRight, self._title_label.width()
+                )
+            )
 
-        Args:
-            callback: 点击设置按钮时执行的函数。
-        """
-        self.settings_clicked.connect(callback)
-
-    def set_avatar(self, source: Any) -> None:
-        """设置头像（预留接口）。
-
-        Args:
-            source: 头像资源，可以是图片路径或 QPixmap。
-        """
-        # TODO: 根据 source 类型设置 QLabel 的 pixmap
-        pass
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self._title_label and event.type() == QEvent.Type.Resize:
+            self._elide_title()
+        return super().eventFilter(obj, event)

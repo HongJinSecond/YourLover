@@ -21,7 +21,8 @@ from agent.memory.profile_store import ProfileStore
 from agent.memory.session_store import SessionStore
 from agent.memory.short_term_memory import ShortTermMemory
 from agent.memory.store import FileMemoryStore
-from core.config import Settings
+from agent.prompts import GLOBAL_SYSTEM_RULES
+from utils.config_manager import ConfigManager
 
 
 class RecordingLLM:
@@ -74,7 +75,7 @@ def _agent(tmp_path, llm=None):
     profile = CountingProfileManager(ProfileStore(tmp_path / "profiles.sqlite3"))
     agent = ChatAgent(
         llm or RecordingLLM(),
-        Settings(),
+        ConfigManager(),
         {"configurable": {"thread_id": "default"}},
         short_term_memory=ShortTermMemory(
             session_store=SessionStore(tmp_path / "sessions.sqlite3"),
@@ -97,6 +98,20 @@ class _FailingExtractor:
 
 
 INSTRUCTION = "距离用户上次回复已经过去了约 2.0 小时，这是你第一次主动找他……"
+
+
+def test_custom_persona_and_global_rules_are_applied_to_proactive_messages(tmp_path):
+    llm = RecordingLLM()
+    agent, _, _ = _agent(tmp_path, llm)
+    agent.config.update(
+        {"PERSONA_PROMPT_MODE": "custom", "CUSTOM_PERSONA_PROMPT": "你是爱摄影的阿林。"}, save=False
+    )
+    agent.invoke({"user_id": "u1", "session_id": "s1", "proactive_context": INSTRUCTION})
+    prompt = llm.calls[-1][0].content
+    assert "你是爱摄影的阿林。" in prompt
+    assert INSTRUCTION in prompt
+    assert prompt.index(INSTRUCTION) < prompt.index(GLOBAL_SYSTEM_RULES)
+    assert prompt.endswith(GLOBAL_SYSTEM_RULES)
 
 
 def test_proactive_turn_hides_instruction_and_skips_user_message(tmp_path):
@@ -131,10 +146,7 @@ def test_proactive_turn_hides_instruction_and_skips_user_message(tmp_path):
     assert not isinstance(messages[-1], HumanMessage)
     # 主动轮补的占位 HumanMessage 写回 messages，保证 AI 之间交替合法
     # （否则后续正常轮 LLM 输入出现 [..., ai, ai, human] 连续 AI，真实模型会返回空）
-    assert any(
-        isinstance(m, HumanMessage) and "他没有回复" in str(m.content)
-        for m in messages
-    )
+    assert any(isinstance(m, HumanMessage) and "他没有回复" in str(m.content) for m in messages)
 
     # 指令用完即清空，不残留到 state
     assert state.get("proactive_context") == ""
@@ -161,14 +173,15 @@ def test_messages_have_no_consecutive_ai_after_proactive(tmp_path):
     )
     types = [type(m) for m in state["messages"]]
     assert not any(
-        types[i] is AIMessage and types[i + 1] is AIMessage
-        for i in range(len(types) - 1)
+        types[i] is AIMessage and types[i + 1] is AIMessage for i in range(len(types) - 1)
     ), f"LLM 输入出现连续 AI 消息：{types}"
 
     # 占位 HumanMessage 不进入 history（不污染 SQLite/UI 恢复）
     history_speakers = [str(getattr(item, "speaker", "")).lower() for item in state["history"]]
     assert history_speakers.count("user") == 2  # 两轮真实用户消息
-    assert all("他没有回复" not in str(getattr(item.message, "content", "")) for item in state["history"])
+    assert all(
+        "他没有回复" not in str(getattr(item.message, "content", "")) for item in state["history"]
+    )
 
 
 def test_messages_from_history_inserts_placeholder_for_consecutive_ai(tmp_path):
@@ -189,7 +202,7 @@ def test_messages_from_history_inserts_placeholder_for_consecutive_ai(tmp_path):
     # 模拟重启：用同一个临时库新建一个 agent（不注入 RecordingLLM 历史，从 SQLite 恢复）
     recovered = ChatAgent(
         RecordingLLM(),
-        Settings(),
+        ConfigManager(),
         {"configurable": {"thread_id": "s1", "user_id": "u1"}},
         short_term_memory=agent.short_term_memory,
         long_term_memory=agent.long_term_memory,
@@ -201,8 +214,7 @@ def test_messages_from_history_inserts_placeholder_for_consecutive_ai(tmp_path):
     messages = ChatAgent._messages_from_history(history)
     types = [type(m) for m in messages]
     assert not any(
-        types[i] is AIMessage and types[i + 1] is AIMessage
-        for i in range(len(types) - 1)
+        types[i] is AIMessage and types[i + 1] is AIMessage for i in range(len(types) - 1)
     ), f"恢复后 messages 出现连续 AI：{types}"
     # 恢复后的占位同样不污染 SQLite
     items = recovered.short_term_memory.load_messages("u1", "s1")
@@ -388,6 +400,5 @@ def test_messages_from_history_cleans_blank_ai_messages():
     # 清洗后 human→ai 交替仍然合法（连续 AI 之间补了主动占位）
     types = [type(m) for m in messages]
     assert not any(
-        types[i] is AIMessage and types[i + 1] is AIMessage
-        for i in range(len(types) - 1)
+        types[i] is AIMessage and types[i + 1] is AIMessage for i in range(len(types) - 1)
     ), f"清洗后出现连续 AI：{types}"

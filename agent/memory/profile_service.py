@@ -41,7 +41,6 @@ from agent.memory.user_profile import (
     validate_profile_update,
 )
 
-
 DEFAULT_PROFILE_MODEL = "qwen2.5:3b"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
@@ -53,14 +52,33 @@ DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 # LLM 调用（与旧的"每轮都调"相比仍是大幅裁剪）。
 PROFILE_TRIGGER_PATTERNS: list[str] = [
     # 姓名 / 昵称 / 称呼
-    r"我叫", r"我是", r"名字是", r"名字叫",
-    r"叫我", r"别叫我", r"请叫我", r"可以叫我", r"以后叫我", r"就叫",
-    r"称呼我", r"你叫我",
+    r"我叫",
+    r"我是",
+    r"名字是",
+    r"名字叫",
+    r"叫我",
+    r"别叫我",
+    r"请叫我",
+    r"可以叫我",
+    r"以后叫我",
+    r"就叫",
+    r"称呼我",
+    r"你叫我",
     # 身份
-    r"我是一名", r"我是一位", r"我是做",
+    r"我是一名",
+    r"我是一位",
+    r"我是做",
     # 语言
-    r"说中文", r"说英文", r"说英语", r"用中文", r"用英文", r"用英语",
-    r"讲中文", r"讲英文", r"讲英语", r"语言",
+    r"说中文",
+    r"说英文",
+    r"说英语",
+    r"用中文",
+    r"用英文",
+    r"用英语",
+    r"讲中文",
+    r"讲英文",
+    r"讲英语",
+    r"语言",
     # 时区
     r"时区",
 ]
@@ -182,7 +200,7 @@ class OllamaProfileCandidateExtractor(ProfileCandidateExtractor):
             return []
 
         prompt = self._build_prompt(user_message)
-        response_text = self._call_ollama(prompt)
+        response_text = self._generate_response(prompt)
         response_payload = self._parse_json_response(response_text)
         raw_candidates = response_payload.get("candidates", [])
         if not isinstance(raw_candidates, list):
@@ -239,6 +257,10 @@ class OllamaProfileCandidateExtractor(ProfileCandidateExtractor):
 用户原话：
 {user_message}
 """
+
+    def _generate_response(self, prompt: str) -> str:
+        """生成候选文本；独立钩子允许兼容接口复用字段与证据校验。"""
+        return self._call_ollama(prompt)
 
     def _call_ollama(self, prompt: str) -> str:
         """调用 Ollama /api/generate；使用 JSON 模式并关闭流式响应。"""
@@ -364,6 +386,31 @@ class OllamaProfileCandidateExtractor(ProfileCandidateExtractor):
         )
 
 
+class LLMProfileCandidateExtractor(OllamaProfileCandidateExtractor):
+    """通过已配置的聊天模型提取画像，复用现有 JSON 解析与候选审核结构。
+
+    OpenAI 模式使用未绑定工具的 LLM，不需要额外的本地 Ollama 模型。
+    """
+
+    def __init__(self, llm: Any, max_candidates: int = 5) -> None:
+        """注入聊天模型，构造时不发送请求。"""
+        super().__init__(max_candidates=max_candidates)
+        self.llm = llm
+
+    def _generate_response(self, prompt: str) -> str:
+        """请求普通 JSON 文本，避免依赖服务商额外实现 JSON mode。"""
+        try:
+            response = self.llm.invoke(
+                [{"role": "user", "content": prompt.removeprefix("/no_think\n")}]
+            )
+        except Exception as exc:
+            raise ProfileCandidateExtractionError("画像候选接口调用失败，已跳过本轮提取") from exc
+        text = getattr(response, "content", "")
+        if not isinstance(text, str) or not text.strip():
+            raise ProfileCandidateExtractionError("画像候选接口返回了空文本")
+        return text
+
+
 class UserProfileManager:
     """用户画像管理类：画像读取、候选审核、确认和上下文生成的唯一业务入口。
 
@@ -396,9 +443,7 @@ class UserProfileManager:
         self.candidate_extractor = (
             candidate_extractor or OllamaProfileCandidateExtractor()
         )  # 可替换的候选提取器
-        self.auto_apply_confidence = float(
-            auto_apply_confidence
-        )  # 用户明确候选的自动应用阈值
+        self.auto_apply_confidence = float(auto_apply_confidence)  # 用户明确候选的自动应用阈值
 
     # ------------------------------------------------------------------
     # 画像读取（每轮调用，仅读 SQLite，安全）
@@ -682,6 +727,7 @@ __all__ = [
     "LongMemoryService",  # 兼容别名
     "ProfileCandidateExtractor",
     "OllamaProfileCandidateExtractor",
+    "LLMProfileCandidateExtractor",
     "ProfileCandidateExtractionError",
     "ProfileCandidateProposal",
     "ProfileProcessingResult",

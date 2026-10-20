@@ -152,7 +152,7 @@ load_runtime_context        ← 每轮：好感度快照 + 用户画像上下文
   ↓
 retrieve_long_term_memory   ← 每轮：向量检索（失败降级关键词）+ 稳定偏好召回
   ↓
-user_input → emotion_analysis → llm ⇄ tools（LLM 发起工具调用时）
+user_input → llm ⇄ tools（LLM 发起工具调用时）
   ↓
 write_profile_candidate     ← 画像候选写入（触发词命中才调，Ollama 失败自动降级）
   ↓
@@ -589,11 +589,11 @@ MemoryRetriever.format_memory_context(...)
   累计结果由 `apply_delta` 钳制到 `[0, 100]`。
 - **降级**：回复未带标记（模型忘记输出）时增量 0，好感度不变，聊天不中断。
 
-人设联动：system prompt（`config.json` / `core.config.py` 的
-`TEST_SYSTEM_PROMPT`）含【好感度与关系阶段】准则，五档行为：
-0~19 初识的朋友 → 20~39 熟悉的朋友 → 40~59 亲密好友（暧昧期）→
-60~79 恋人 → 80~100 爱人。模型按当前快照所在档位调整称呼、语气、
-主动程度与聊天边界。
+人设联动：system prompt 固定追加 `agent/prompts/global_rules.md` 中的
+【好感度与关系阶段】准则。0~19 保持分寸 → 20~39 熟悉放松 →
+40~59 增加信任 → 60~79 在人物与用户意愿允许的范围内亲近 →
+80~100 稳定熟悉。关系不因分数增长被强制改成恋人，朋友等自定义
+人设仍保留原有边界。人物描述由默认只读副本或自定义草稿提供。
 
 时序约定：`love_snapshot` 在每轮开头由 `load_runtime_context` 读取（本轮
 system prompt 用上轮值）；`judge_affinity` 在轮末解析标记并累加写回
@@ -973,10 +973,10 @@ MVP 的目标是先验证“能存、能取、能影响回复”。跑通之后�
 
 > 💡 **约定八：结构化标记分符号体系。** 情绪标记用双尖括号 `<<Happy>>`，好感度增量用双花括号 `{{+3}}`，新增输出标记必须使用新符号并同步 `message_filter` 剔除逻辑，防止正则解析互相干扰。
 
-> 💡 **约定九：提示词按 OC 档案组织，人设与世界观察一致。** `TEST_SYSTEM_PROMPT`（config.json 与 core/config.py 双份，必须同步修改）按板块组织：人物档案（姓名/年龄/专业/家庭/羁绊/爱好）→ 性格 → **她的生活节奏表**（按当前时间推断"她那边"在干什么）→ 网聊行为规范 → 职责与工具 → 运行时信息 → 好感度五档 → 输出格式 → 安全权限。两个关键设计：
-> - **异地网聊世界观**：她是异地上学的邻家妹妹，通过聊天软件陪伴用户，桌面上显示的是她的虚拟形象（相当于视频通话）。这样她被问"在干嘛"会回答自己那边的生活（对照生活节奏表），而不是"在你身边"。
-> - **称呼规则**：明确禁止每条消息都称呼对方（仅打招呼/撒娇/强调/久别时用称呼），避免真人网聊失真。
-> 同时提醒：任何世界观设定变更需同步考虑安全板块（如"不承认是AI"条款与人设的关系）、好感度阶段措辞（异地恋设定下的恋人档话术）以及 Live2D 形象的存在合理性。
+> 💡 **约定九：人物描述与全局规则分层维护。** `PERSONA_PROMPT_MODE` 和 `CUSTOM_PERSONA_PROMPT` 保存在 `config.json`；默认人物副本与通用规则分别维护在 `agent/prompts/default_persona.md` 和 `global_rules.md`。每轮开始快照人设，组装顺序为人物描述 → 运行时资料与主动指令 → 固定全局规则。界面只允许编辑人物描述，不允许写回默认副本或基础协议。
+> - **生活与表达连续性**：人物背景、情绪与称呼前后一致，避免每轮重新编造共同经历或强行亲近。
+> - **真实能力边界**：角色日常属于虚构背景，不能冒充真实感知或已执行的线下行为；不靠否认技术身份维持人设。
+> 详细使用、迁移和测试约定见 [人物提示词](persona_prompts.md)。
 
 > 💡 **约定十：主动消息指令走独立隐藏通道。** 主动对话（ProactiveEngine）产出的指令文本只能经 `EmotionState.proactive_context` 注入 system prompt：不创建用户消息、不写入 history/SQLite，由 `save_short_term_memory`（最后节点）统一清空 + 控制器显式传空串双保险。新增"系统注入的隐藏指令"场景时沿用此通道，禁止伪造用户消息（会污染消息列表与活跃时间统计）。详细机制见 [主动对话机制文档](./proactive_dialogue_mechanism.md)。
 
@@ -1018,11 +1018,13 @@ ChatAgent 的注入方式（`agent/agent/ChatAgent.py`）：
 
 ```python
 agent = ChatAgent(
-    llm, settings, {"configurable": {"thread_id": session_id}},
-    short_term_memory=short_term,      # 不传则用默认 SQLite 存储
-    long_term_memory=long_term,        # 不传则用默认 JSON 存储 + 规则分类器
-    user_profile_manager=profile,      # 不传则用默认画像库 + Ollama 候选抽取
-    affinity_service=None,             # 可选，默认 AffinityService()
+    llm,
+    settings,
+    {"configurable": {"thread_id": session_id}},
+    short_term_memory=short_term,  # 不传则用默认 SQLite 存储
+    long_term_memory=long_term,  # 不传则用默认 JSON 存储 + 规则分类器
+    user_profile_manager=profile,  # 不传则用默认画像库 + Ollama 候选抽取
+    affinity_service=None,  # 可选，默认 AffinityService()
 )
 ```
 

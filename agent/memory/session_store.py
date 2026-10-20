@@ -75,10 +75,7 @@ class SessionStore:
             raise ValueError("timeout must be greater than 0")
         if database_path is None:
             database_path = (
-                Path(__file__).resolve().parents[2]
-                / "data"
-                / "memory"
-                / "sessions.sqlite3"
+                Path(__file__).resolve().parents[2] / "data" / "memory" / "sessions.sqlite3"
             )
 
         self.database_path = Path(database_path)  # SQLite 数据库文件路径
@@ -313,7 +310,7 @@ class SessionStore:
                    item_type, speaker, message_json, love,
                    ai_emo_json, user_emo_json, speak_time, importance
             FROM session_memory_items
-            WHERE {' AND '.join(conditions)}
+            WHERE {" AND ".join(conditions)}
             ORDER BY sequence_no {order}{limit_clause}
         """
 
@@ -321,7 +318,13 @@ class SessionStore:
             with self._connect() as connection:
                 rows = connection.execute(query, parameters).fetchall()
             records = [self._memory_item_from_row(row) for row in rows]
-        except (sqlite3.DatabaseError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        except (
+            sqlite3.DatabaseError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
             raise SessionStoreError("Failed to load MemoryItem") from exc
         return list(reversed(records)) if limit is not None else records
 
