@@ -4,8 +4,10 @@
 检索时按 user_id 过滤后做向量相似度召回。日期作为元数据随条目存储，
 注入 Prompt 时展示，让 LLM 知道"这条回忆是哪一天说的"。
 
-实现参考 agent/tools/RAGTool.py：使用 langchain_chroma 的 Chroma +
-OllamaEmbeddings（embedding 模型见 config.json 的 EMBEDDING_MODEL_NAME）。
+Embedding 提供方由 config.json 的 EMBEDDING_PROVIDER 决定
+（ollama / openai / none，见 agent/models/embeddings.py）。
+EMBEDDING_PROVIDER=none 时初始化直接抛出 VectorStoreError，
+上层 LongTermMemory 降级到 JSON + 关键词检索（Plan B），不中断聊天。
 
 任何初始化/写入/检索失败都会抛出 VectorStoreError，由上层
 LongTermMemory 降级到 JSON + 关键词检索，不中断聊天。
@@ -17,6 +19,11 @@ from datetime import datetime
 from typing import Any
 
 from agent.memory.llm_extractor import LLMMemoryEntry
+from agent.models.embeddings import (
+    create_embeddings,
+    get_embedding_provider,
+    is_embedding_enabled,
+)
 
 
 class VectorStoreError(RuntimeError):
@@ -43,22 +50,38 @@ class VectorMemoryStore:
         参数：
             collection_name: Chroma 集合名，默认 long_term_memory（与 RAG_DB 隔离）
             persist_directory: Chroma 持久化目录，默认 config.CHROMA_PATH
-            embedding_model: embedding 模型名，默认 config.EMBEDDING_MODEL_NAME
+            embedding_model: Ollama embedding 模型名，默认 config.EMBEDDING_MODEL_NAME
+                （仅 EMBEDDING_PROVIDER=ollama 时使用）
+
+        异常：
+            VectorStoreError: EMBEDDING_PROVIDER=none（禁用向量记忆）或
+                Chroma/embedding 初始化失败。调用方应降级到 JSON+关键词检索。
         """
         try:
             from langchain_chroma import Chroma
 
-            from agent.models.OllamaModels import OllamaEmbeddings
             from utils.config_manager import config
         except ImportError as exc:
             raise VectorStoreError(f"Chroma 依赖未安装: {exc}") from exc
 
+        # embedding 禁用时绝不创建 Chroma：chromadb 在 embedding_function=None
+        # 时会静默回退到内置 ONNX MiniLM 模型，与"禁用 embedding"语义冲突。
+        if not is_embedding_enabled(config):
+            raise VectorStoreError(
+                "Embedding 未启用（EMBEDDING_PROVIDER=none），长期记忆使用 JSON+关键词检索。"
+            )
+
         persist_directory = persist_directory or config.CHROMA_PATH
-        embedding_model = embedding_model or config.EMBEDDING_MODEL_NAME
+        try:
+            embedding_function = create_embeddings(config)
+        except Exception as exc:
+            raise VectorStoreError(f"Embedding 初始化失败: {exc}") from exc
+        if embedding_model and get_embedding_provider(config) == "ollama":
+            embedding_function.model = embedding_model
         try:
             self.collection = Chroma(
                 collection_name=collection_name,
-                embedding_function=OllamaEmbeddings(model=embedding_model),
+                embedding_function=embedding_function,
                 persist_directory=persist_directory,
             )
         except Exception as exc:

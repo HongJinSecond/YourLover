@@ -154,6 +154,12 @@ def test_remote_controller_tool_loop_and_profile_without_ollama(tmp_path, monkey
 
     monkeypatch.setattr(module.requests, "get", forbid_ollama)
     monkeypatch.setattr(module, "get_ollama_llm", forbid_ollama)
+
+    def forbid_vector_store(*args, **kwargs):
+        raise RuntimeError("EMBEDDING_PROVIDER=none：向量记忆不可用")
+
+    # EMBEDDING_PROVIDER=none：向量记忆不可用，控制器降级为 JSON+关键词检索。
+    monkeypatch.setattr(module, "VectorMemoryStore", forbid_vector_store)
     monkeypatch.setattr(
         module, "LongTermMemory", partial(LongTermMemory, root_dir=tmp_path / "users")
     )
@@ -220,28 +226,44 @@ def test_ollama_uses_configured_url_and_requested_model(monkeypatch):
     assert not controller.is_connected
 
 
-def test_remote_rag_queries_existing_documents_without_embeddings(monkeypatch):
+def test_rag_tool_returns_disabled_message_without_embeddings(monkeypatch):
+    """EMBEDDING_PROVIDER=none 时 RAG 工具整体禁用，调用返回固定提示。"""
+    from importlib import import_module
+    from unittest.mock import Mock
+
+    module = import_module("agent.tools.RAGTool")
+    monkeypatch.setattr(
+        module,
+        "app_config",
+        SimpleNamespace(EMBEDDING_PROVIDER="none", CHROMA_PATH="unused", RAG_N_RESULTS=5),
+    )
+    tool = module.RAGTool()
+    assert tool.enabled is False
+    assert tool.RAG is None
+    assert module.RAG_DISABLED_MESSAGE in tool._tool_call("任意查询")
+
+
+def test_rag_query_uses_vector_and_bm25_when_enabled(monkeypatch):
+    """embedding 启用时查询走向量+BM25 多路召回。"""
     from importlib import import_module
     from unittest.mock import Mock
 
     from langchain_core.documents import Document
 
     module = import_module("agent.tools.RAGTool")
-    monkeypatch.setattr(module, "app_config", SimpleNamespace(LLM_PROVIDER="openai"))
+    config = SimpleNamespace(EMBEDDING_PROVIDER="ollama", RAG_N_RESULTS=5)
     rag = module.RAG.__new__(module.RAG)
-    rag.config = module.app_config
+    rag.config = config
     rag.chroma_db = Mock()
-    rag.chroma_db.similarity_search_with_relevance_scores.side_effect = AssertionError(
-        "不应调用本地 embedding"
-    )
+    rag.chroma_db.similarity_search_with_relevance_scores.return_value = [
+        (Document(page_content="校园助手提供课程提醒功能", metadata={"source": "guide.txt"}), 0.9)
+    ]
     rag.bm25_retriever = module.BM25Retriever()
     rag.bm25_retriever.build_from_documents(
-        [
-            Document(page_content="校园助手提供课程提醒功能", metadata={"source": "guide.txt"}),
-        ]
+        [Document(page_content="校园助手提供课程提醒功能", metadata={"source": "guide.txt"})]
     )
     result = rag.query("课程提醒")
-    assert "BM25" in result
+    assert "向量+BM25多路召回" in result
     assert "课程提醒功能" in result
     assert "guide.txt" in result
-    rag.chroma_db.similarity_search_with_relevance_scores.assert_not_called()
+    rag.chroma_db.similarity_search_with_relevance_scores.assert_called_once()

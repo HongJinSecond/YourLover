@@ -137,6 +137,8 @@ class SettingWindow(BaseWindow):
     def _on_setting_changed(self, key: str, value: Any) -> None:
         if key == "LLM_PROVIDER":
             self._sync_model_fields()
+        elif key == "EMBEDDING_PROVIDER":
+            self._sync_embedding_fields()
         elif key == "PERSONA_PROMPT_MODE":
             self._sync_prompt_fields()
 
@@ -151,7 +153,7 @@ class SettingWindow(BaseWindow):
         for key in ("OPENAI_BASE_URL", "OPENAI_MODEL_ID", "OPENAI_API_KEY"):
             self._setting_panel.set_item_enabled(key, remote)
             self._setting_panel.set_item_visible(key, remote)
-        for key in ("api_base", "CHAT_MODEL_NAME"):
+        for key in ("CHAT_MODEL_NAME",):
             self._setting_panel.set_item_enabled(key, not remote)
             self._setting_panel.set_item_visible(key, not remote)
         self._provider_note.setText(
@@ -159,6 +161,22 @@ class SettingWindow(BaseWindow):
             if remote
             else "请先启动 Ollama，并确保所填模型已下载。保存时将检查本地连接。"
         )
+        self._sync_embedding_fields()
+
+    def _sync_embedding_fields(self) -> None:
+        """按 embedding 提供方显隐对应字段；none 时隐藏全部 embedding 输入。
+
+        Embedding 的地址与密钥均为独立配置项，不与聊天服务共用。
+        """
+        provider = self.get_setting_value("EMBEDDING_PROVIDER")
+        for key in ("EMBEDDING_API_BASE", "EMBEDDING_MODEL_NAME"):
+            visible = provider == "ollama"
+            self._setting_panel.set_item_enabled(key, visible)
+            self._setting_panel.set_item_visible(key, visible)
+        for key in ("EMBEDDING_OPENAI_BASE_URL", "EMBEDDING_OPENAI_API_KEY", "EMBEDDING_OPENAI_MODEL_ID"):
+            visible = provider == "openai"
+            self._setting_panel.set_item_enabled(key, visible)
+            self._setting_panel.set_item_visible(key, visible)
 
     def add_setting_item(self, item: SettingItem) -> None:
         self._setting_panel.add_item(item)
@@ -201,6 +219,41 @@ class SettingWindow(BaseWindow):
                 values["CHAT_MODEL_NAME"] = str(values["CHAT_MODEL_NAME"]).strip()
                 if not values["CHAT_MODEL_NAME"]:
                     raise ValueError("请填写 Ollama 模型名称")
+            embedding_changed = any(
+                value != self._saved_values.get(key)
+                for key, value in values.items()
+                if key in {
+                    "EMBEDDING_PROVIDER", "EMBEDDING_API_BASE", "EMBEDDING_MODEL_NAME",
+                    "EMBEDDING_OPENAI_MODEL_ID", "EMBEDDING_OPENAI_BASE_URL",
+                    "EMBEDDING_OPENAI_API_KEY",
+                }
+            )
+            if embedding_changed:
+                provider = values.get("EMBEDDING_PROVIDER")
+                if provider == "ollama":
+                    values["EMBEDDING_MODEL_NAME"] = str(
+                        values.get("EMBEDDING_MODEL_NAME", "")
+                    ).strip()
+                    if not values["EMBEDDING_MODEL_NAME"]:
+                        raise ValueError("请填写 Ollama Embedding 模型名称，或切换为不启用")
+                    values["EMBEDDING_API_BASE"] = str(
+                        values.get("EMBEDDING_API_BASE", "") or ""
+                    ).strip().rstrip("/")
+                elif provider == "openai":
+                    if not str(values.get("EMBEDDING_OPENAI_MODEL_ID", "")).strip():
+                        raise ValueError("请填写 Embedding Model ID，或切换为不启用")
+                    if not str(values.get("EMBEDDING_OPENAI_API_KEY", "")).strip():
+                        raise ValueError("请填写 Embedding API Key，或切换为不启用")
+                    model, url, key = validate_openai_settings(
+                        values.get("EMBEDDING_OPENAI_MODEL_ID", ""),
+                        values.get("EMBEDDING_OPENAI_BASE_URL", ""),
+                        values.get("EMBEDDING_OPENAI_API_KEY", ""),
+                    )
+                    values.update(
+                        EMBEDDING_OPENAI_MODEL_ID=model,
+                        EMBEDDING_OPENAI_BASE_URL=url,
+                        EMBEDDING_OPENAI_API_KEY=key,
+                    )
             if values["CHAT_AVATAR"] != self._saved_values.get("CHAT_AVATAR"):
                 values["CHAT_AVATAR"] = import_avatar(values["CHAT_AVATAR"], config.config_dir)
             config.update(values)
@@ -330,6 +383,68 @@ class SettingWindow(BaseWindow):
                 "Model ID",
                 getattr(config, "OPENAI_MODEL_ID", ""),
                 extra={"placeholder": "服务商提供的模型 ID"},
+            )
+        )
+        self.add_setting_item(
+            OptionSettingItem(
+                "EMBEDDING_PROVIDER",
+                "Embedding 服务",
+                getattr(config, "EMBEDDING_PROVIDER", "ollama"),
+                extra={
+                    "options": ["ollama", "openai", "none"],
+                    "option_labels": {
+                        "ollama": "本地 Ollama",
+                        "openai": "OpenAI 兼容接口",
+                        "none": "不启用",
+                    },
+                    "help_text": "不启用时长期记忆使用关键词检索，RAG 知识库禁用。",
+                },
+            )
+        )
+        self.add_setting_item(
+            TextSettingItem(
+                "EMBEDDING_API_BASE",
+                "Embedding Ollama URL",
+                getattr(config, "EMBEDDING_API_BASE", "http://localhost:11434"),
+                extra={
+                    "placeholder": "http://localhost:11434",
+                    "help_text": "与上方 Ollama URL 相互独立。",
+                },
+            )
+        )
+        self.add_setting_item(
+            TextSettingItem(
+                "EMBEDDING_MODEL_NAME",
+                "Ollama Embedding 模型",
+                getattr(config, "EMBEDDING_MODEL_NAME", ""),
+                extra={"placeholder": "例如 qwen3-embedding:4b"},
+            )
+        )
+        self.add_setting_item(
+            TextSettingItem(
+                "EMBEDDING_OPENAI_BASE_URL",
+                "Embedding API URL",
+                getattr(config, "EMBEDDING_OPENAI_BASE_URL", ""),
+                extra={
+                    "placeholder": "https://服务商地址/v1",
+                    "help_text": "与聊天服务的 API URL 相互独立。",
+                },
+            )
+        )
+        self.add_setting_item(
+            TextSettingItem(
+                "EMBEDDING_OPENAI_API_KEY",
+                "Embedding API Key",
+                getattr(config, "EMBEDDING_OPENAI_API_KEY", ""),
+                extra={"password": True, "placeholder": "输入 Embedding 服务密钥"},
+            )
+        )
+        self.add_setting_item(
+            TextSettingItem(
+                "EMBEDDING_OPENAI_MODEL_ID",
+                "Embedding Model ID",
+                getattr(config, "EMBEDDING_OPENAI_MODEL_ID", ""),
+                extra={"placeholder": "服务商提供的 embedding 模型 ID"},
             )
         )
         self._saved_values = self.get_all_values()

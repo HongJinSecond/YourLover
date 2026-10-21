@@ -11,6 +11,7 @@ from agent.agent.ChatAgent import ChatAgent
 from agent.memory.long_term_memory import LongTermMemory
 from agent.memory.MemoryItem import MemoryItem
 from agent.memory.profile_service import LLMProfileCandidateExtractor, UserProfileManager
+from agent.memory.vector_memory_store import VectorMemoryStore
 from agent.models.OllamaModels import get_ollama_llm
 from agent.models.OpenAIModels import get_openai_llm, normalize_base_url
 from utils.config_manager import ConfigManager
@@ -90,13 +91,18 @@ class AgentController:
             llm = get_ollama_llm(model_name=model_name, base_url=base_url)
         elif self.provider == "openai":
             llm = get_openai_llm(model_name, url, api_key)
-            # A chat endpoint need not provide embeddings; use the existing keyword storage.
-            dependencies["long_term_memory"] = LongTermMemory()
             dependencies["user_profile_manager"] = UserProfileManager(
                 candidate_extractor=LLMProfileCandidateExtractor(llm)
             )
         else:
             raise ValueError(f"不支持的模型服务：{self.provider}")
+        # 向量长期记忆只取决于 EMBEDDING_PROVIDER，与聊天服务解耦：
+        # none 时 VectorMemoryStore 抛错，降级为 JSON+关键词检索（Plan B）。
+        try:
+            dependencies["long_term_memory"] = LongTermMemory(vector_store=VectorMemoryStore())
+        except Exception as exc:
+            logger.warning("向量长期记忆不可用，降级为 JSON+关键词检索：%s", exc)
+            dependencies["long_term_memory"] = LongTermMemory()
         self.agent = ChatAgent(
             llm, self.settings, {"configurable": dict(self.configurable)}, **dependencies
         )

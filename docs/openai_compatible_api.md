@@ -18,8 +18,7 @@ Ollama 的模型名、URL 与兼容接口配置分别保留，可随时切回「
 
 - 使用 Chat Completions 协议和 function tools，不使用 Responses API。所选模型需要支持工具调用；只支持文本生成或 Responses 的端点不能完整运行当前 Agent。协议参考：[OpenAI Chat Completions API](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。
 - 普通聊天、主动对话、会话摘要、长期记忆提取和用户画像提取复用所配置的聊天模型。远程服务会收到这些功能所需的对话与上下文；画像提取等辅助请求也会消耗服务商额度。
-- OpenAI 模式不假定服务商同时提供 embedding 接口。动态长期记忆使用已有的本地 JSON 存储和关键词检索，知识库查询使用 BM25，可在不启动 Ollama 的情况下聊天及查询已有知识。Ollama 向量库中的历史动态记忆不会自动迁移至 JSON；聊天记录和画像仍使用原 SQLite 存储。
-- 知识库新增文档的向量化上传仍沿用原 Ollama embedding 流程；本次没有增加远程 embedding 配置。
+- 聊天服务与 embedding 服务相互独立：`EMBEDDING_PROVIDER` 决定向量化走本地 Ollama、OpenAI 兼容接口或不启用。`none` 时动态长期记忆使用本地 JSON 存储和关键词检索，RAG 知识库整体禁用；`openai` 时使用独立的 Embedding API URL / API Key / Model ID，与聊天服务配置互不影响。详见 [配置管理约定](configuration.md) 的「Embedding 服务」。
 
 ## 配置持久化
 

@@ -22,6 +22,23 @@ isolated_config.update({"RAG_N_RESULTS": 2}, save=False)
 
 `OPENAI_API_KEY` 继续单独保存在配置文件同级目录下的 `data/model_credentials.json`，不写入普通配置。密钥文件损坏时允许进入设置重新填写。具体协议和存储说明见 [模型服务配置](openai_compatible_api.md)。
 
+## Embedding 服务
+
+Embedding（向量化）与聊天模型服务相互独立，由 `EMBEDDING_PROVIDER` 单独选择：
+
+| 配置项 | 取值 | 说明 |
+| --- | --- | --- |
+| `EMBEDDING_PROVIDER` | `ollama` / `openai` / `none` | 向量化服务提供方；旧配置缺少该键时默认 `ollama` |
+| `EMBEDDING_MODEL_NAME` | 模型名 | 仅 `ollama` 模式使用，例如 `qwen3-embedding:4b` |
+| `EMBEDDING_API_BASE` | 服务地址 | 仅 `ollama` 模式使用；留空默认 `http://localhost:11434`，与聊天的 `api_base` 相互独立 |
+| `EMBEDDING_OPENAI_MODEL_ID` | 模型 ID | 仅 `openai` 模式使用 |
+| `EMBEDDING_OPENAI_BASE_URL` | 服务地址 | 仅 `openai` 模式使用，与聊天的 `OPENAI_BASE_URL` 相互独立 |
+| `EMBEDDING_OPENAI_API_KEY` | 密钥 | 仅 `openai` 模式使用，与聊天的 `OPENAI_API_KEY` 相互独立；保存在 `data/model_credentials.json` |
+
+`EMBEDDING_PROVIDER=none` 表示不启用任何 embedding：动态长期记忆自动降级为 JSON 文件 + 关键词检索（Plan B），RAG 知识库整体禁用（工具调用返回"没有设置Embedding，RAG功能已被禁用"，知识库上传页提示后退出）。历史向量数据保留在 Chroma 中，重新启用后可继续使用。
+
+设置窗口的「Embedding 服务」下拉框切换提供方，并按取值显隐对应输入框；Embedding 的服务地址与密钥均为独立配置项，不与聊天服务共用。保存时校验模型名/Model ID 与密钥非空。
+
 设置窗口先调用 `config.update()`，成功后发出 `settings_batch_changed`，事件只包含本次发生变化的字段。模型设置变更时，`App` 等活跃回复结束后重建 Agent；仅修改聊天名称或头像时立即更新 UI，人物提示词变更从下一轮开始生效，这两类修改都不验证或重连模型。
 
 ## 人物提示词

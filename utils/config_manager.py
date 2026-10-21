@@ -21,6 +21,7 @@ class ConfigManager:
         self._config_path = Path(config_path).resolve()
         self._credentials_path = self._config_path.parent / "data" / "model_credentials.json"
         self._api_key = ""
+        self._embedding_api_key = ""
         self._data: Dict[str, Any] = {}
         self._load()
 
@@ -48,19 +49,28 @@ class ConfigManager:
             self._data.setdefault("PERSONA_PROMPT_MODE", "custom")
         # 兼容曾手动写入配置的密钥；下次保存时从 config.json 中移除。
         self._api_key = self._data.pop("OPENAI_API_KEY", "")
+        self._embedding_api_key = self._data.pop("EMBEDDING_OPENAI_API_KEY", "")
         if self._credentials_path.exists():
             try:
                 credentials = json.loads(self._credentials_path.read_text(encoding="utf-8"))
-                self._api_key = str(credentials["OPENAI_API_KEY"] or "")
-            except (OSError, ValueError, KeyError, TypeError):
+                self._api_key = str(credentials.get("OPENAI_API_KEY") or "")
+                self._embedding_api_key = str(credentials.get("EMBEDDING_OPENAI_API_KEY") or "")
+            except (OSError, ValueError, TypeError, AttributeError):
                 # 密钥文件损坏时允许用户进入设置重新填写，不输出文件正文。
                 self._api_key = ""
+                self._embedding_api_key = ""
                 logger.warning("无法读取本地模型密钥，请在设置中重新填写 API Key。")
 
     def _save(self):
         """分别原子替换密钥与普通配置文件，避免密钥进入版本控制。"""
         self._credentials_path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_json(self._credentials_path, {"OPENAI_API_KEY": self._api_key})
+        self._write_json(
+            self._credentials_path,
+            {
+                "OPENAI_API_KEY": self._api_key,
+                "EMBEDDING_OPENAI_API_KEY": self._embedding_api_key,
+            },
+        )
         self._write_json(self._config_path, self._data)
 
     @staticmethod
@@ -81,6 +91,8 @@ class ConfigManager:
             raise AttributeError(name)
         if name == "OPENAI_API_KEY":
             return self._api_key
+        if name == "EMBEDDING_OPENAI_API_KEY":
+            return self._embedding_api_key
         try:
             return self._data[name]
         except KeyError:
@@ -92,15 +104,19 @@ class ConfigManager:
         批量更新配置项。
         """
         values = dict(new_values)
-        previous_data, previous_key = dict(self._data), self._api_key
+        previous_data = dict(self._data)
+        previous_keys = (self._api_key, self._embedding_api_key)
         if "OPENAI_API_KEY" in values:
             self._api_key = str(values.pop("OPENAI_API_KEY") or "").strip()
+        if "EMBEDDING_OPENAI_API_KEY" in values:
+            self._embedding_api_key = str(values.pop("EMBEDDING_OPENAI_API_KEY") or "").strip()
         self._data.update(values)
         try:
             if save:
                 self._save()
         except OSError:
-            self._data, self._api_key = previous_data, previous_key
+            self._data = previous_data
+            self._api_key, self._embedding_api_key = previous_keys
             raise
 
 

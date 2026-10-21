@@ -15,15 +15,24 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from rank_bm25 import BM25Okapi
 
-from agent.models.OllamaModels import OllamaEmbeddings
+from agent.models.embeddings import (
+    EMBEDDING_PROVIDER_NONE,
+    create_embeddings,
+    get_embedding_provider,
+)
 from agent.tools.BaseTool import BaseTool
 from utils.config_manager import ConfigManager
 from utils.config_manager import config as app_config
+
+RAG_DISABLED_MESSAGE = "没有设置Embedding，RAG功能已被禁用"
 
 
 class RAGTool(BaseTool):
     """
     RAG查询工具，用于检索和查询信息, 包含额外的数据库内容，用于补充模型中不存在的信息或过时的信息，以解决模型幻觉问题。
+
+    EMBEDDING_PROVIDER=none 时知识库整体禁用：所有调用返回固定提示，
+    不初始化 Chroma，也不发起任何 embedding 请求。
     """
 
     name = "rag"
@@ -50,10 +59,14 @@ class RAGTool(BaseTool):
     }
 
     def __init__(self):
-        self.RAG = RAG(app_config)
+        # embedding 禁用时跳过 Chroma/BM25 初始化，工具调用统一返回禁用提示。
+        self.enabled = get_embedding_provider(app_config) != EMBEDDING_PROVIDER_NONE
+        self.RAG = RAG(app_config) if self.enabled else None
 
     def _tool_call(self, query: str) -> str:
         """调用RAG工具，返回查询结果"""
+        if not self.enabled:
+            return f"[禁用] {RAG_DISABLED_MESSAGE}"
         return self.RAG.query(query, n_results=self.RAG.config.RAG_N_RESULTS)
 
 
@@ -64,10 +77,12 @@ class RAG:
 
     def __init__(self, config: ConfigManager):
         self.config = config
+        # embedding 提供方由 EMBEDDING_PROVIDER 决定（ollama/openai）；
+        # none 时 RAGTool 不会构造本类。
         self.chroma_db = Chroma(
             collection_name="RAG_DB",
-            embedding_function=OllamaEmbeddings(model=self.config.EMBEDDING_MODEL_NAME),
-            persist_directory=self.config.CHROMA_PATH,
+            embedding_function=create_embeddings(config),
+            persist_directory=config.CHROMA_PATH,
         )
 
         self.spliter = RecursiveCharacterTextSplitter(
@@ -134,12 +149,12 @@ class RAG:
         # 多路召回时各路多取一些候选，便于融合后仍有足够 top-k
         k_candidates = n_results * 2
 
-        # OpenAI 兼容模式只需聊天接口：查询已有知识库时直接使用 BM25，
-        # 不额外要求用户配置 embedding API 或启动 Ollama。
-        remote = getattr(self.config, "LLM_PROVIDER", "ollama") == "openai"
+        # 向量召回需要 embedding 服务：EMBEDDING_PROVIDER=none 时 RAGTool
+        # 已整体禁用本工具；openai 提供方走远程 embedding 接口。
+        use_vector = get_embedding_provider(self.config) != EMBEDDING_PROVIDER_NONE
         vec_results = (
             []
-            if remote
+            if not use_vector
             else self.chroma_db.similarity_search_with_relevance_scores(
                 query=query,
                 k=k_candidates,
@@ -170,7 +185,7 @@ class RAG:
             )
             formatted_chunks.append(chunk_text)
 
-        method = "BM25 关键词召回" if remote else "向量+BM25多路召回"
+        method = "向量+BM25多路召回" if use_vector else "BM25 关键词召回"
         header = f"[检索成功] {method}，共返回 {len(formatted_chunks)} 条结果:\n{'=' * 50}\n"
         return header + "\n\n".join(formatted_chunks)
 

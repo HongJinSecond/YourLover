@@ -7,6 +7,10 @@ email: 756547077@qq.com
 
 import streamlit as st
 
+from agent.models.embeddings import (
+    EMBEDDING_PROVIDER_NONE,
+    get_embedding_provider,
+)
 from agent.tools.RAGTool import RAG
 from utils.config_manager import config as settings
 
@@ -21,6 +25,11 @@ def main():
     st.set_page_config(page_title="RAG 知识库管理", page_icon="📚", layout="centered")
     st.title("📚 RAG 知识库上传")
 
+    provider = get_embedding_provider(settings)
+    if provider == EMBEDDING_PROVIDER_NONE:
+        st.error("没有设置Embedding，RAG功能已被禁用。请在应用设置的「Embedding 服务」中选择本地 Ollama 或 OpenAI 兼容接口。")
+        st.stop()
+
     rag = get_rag()
 
     # 侧边栏：知识库统计
@@ -28,7 +37,14 @@ def main():
         st.header("📊 知识库统计")
         doc_count = len(rag.bm25_retriever.documents)
         st.metric("文档段数", doc_count)
-        st.caption(f"向量化模型: `{settings.EMBEDDING_MODEL_NAME}`")
+        if provider == "openai":
+            st.caption(f"向量化模型: `{settings.EMBEDDING_OPENAI_MODEL_ID}`（OpenAI 兼容接口）")
+            st.caption(f"Embedding API: `{settings.EMBEDDING_OPENAI_BASE_URL}`")
+        else:
+            st.caption(f"向量化模型: `{settings.EMBEDDING_MODEL_NAME}`（本地 Ollama）")
+            st.caption(
+                f"Embedding 地址: `{settings.EMBEDDING_API_BASE or 'http://localhost:11434'}`"
+            )
         st.caption(f"向量库路径: `{settings.CHROMA_PATH}`")
 
     st.caption("支持文件上传或直接粘贴文本，写入后会同时更新向量库与 BM25 索引")

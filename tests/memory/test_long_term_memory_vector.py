@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from agent.memory.llm_extractor import LLMMemoryEntry
 from agent.memory.long_term_memory import LongTermMemory
 from agent.memory.store import FileMemoryStore
@@ -13,8 +15,8 @@ def test_vector_store_uses_current_json_configuration(tmp_path, monkeypatch):
     from unittest.mock import Mock
 
     import langchain_chroma
+    import langchain_ollama
 
-    import agent.models.OllamaModels as models
     import utils.config_manager as config_module
 
     path = tmp_path / "config.json"
@@ -23,6 +25,7 @@ def test_vector_store_uses_current_json_configuration(tmp_path, monkeypatch):
             {
                 "CHROMA_PATH": str(tmp_path / "custom-chroma"),
                 "EMBEDDING_MODEL_NAME": "custom-embedding-model",
+                "EMBEDDING_API_BASE": "http://localhost:11500",
             }
         ),
         encoding="utf-8",
@@ -31,10 +34,27 @@ def test_vector_store_uses_current_json_configuration(tmp_path, monkeypatch):
     chroma = Mock()
     embeddings = Mock(return_value=object())
     monkeypatch.setattr(langchain_chroma, "Chroma", chroma)
-    monkeypatch.setattr(models, "OllamaEmbeddings", embeddings)
+    monkeypatch.setattr(langchain_ollama, "OllamaEmbeddings", embeddings)
     VectorMemoryStore()
-    embeddings.assert_called_once_with(model="custom-embedding-model")
+    embeddings.assert_called_once_with(
+        model="custom-embedding-model", base_url="http://localhost:11500"
+    )
     assert chroma.call_args.kwargs["persist_directory"] == str(tmp_path / "custom-chroma")
+
+
+def test_vector_store_raises_when_embedding_disabled(tmp_path, monkeypatch):
+    import json
+
+    import utils.config_manager as config_module
+
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"CHROMA_PATH": str(tmp_path / "custom-chroma"), "EMBEDDING_PROVIDER": "none"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "config", config_module.ConfigManager(path))
+    with pytest.raises(VectorStoreError, match="Embedding"):
+        VectorMemoryStore()
 
 
 class BrokenVectorStore:
